@@ -2,6 +2,12 @@
 
 All notable changes to Xmd are documented in this file.
 
+## [Unreleased]
+
+Changes staged for the next release. Update this section as you work; it's
+what pre-release builds (`vX.Y.Z-beta.N`, `-rc.N`, etc.) pull their release
+notes from until a matching `## [X.Y.Z]` heading exists below.
+
 ## [1.0.0] - 2026-08-20
 
 First stable release.

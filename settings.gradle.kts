@@ -14,5 +14,5 @@ dependencyResolutionManagement {
     }
 }
 
-rootProject.name = "FFDownloader"
+rootProject.name = "Xmd"
 include(":app")

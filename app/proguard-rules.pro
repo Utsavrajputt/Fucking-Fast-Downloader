@@ -12,7 +12,7 @@
 # Room entities/DAOs are annotation-processed at compile time, but keep the
 # model classes themselves since QueueRepository/DownloadService serialize
 # them by field access.
--keep class com.utsav.ffdownloader.core.** { *; }
+-keep class com.invictus.xmd.core.** { *; }
 
 # Kotlin coroutines internals occasionally trip up R8 without this.
 -dontwarn kotlinx.coroutines.**

@@ -5,11 +5,11 @@ plugins {
 }
 
 android {
-    namespace = "com.utsav.ffdownloader"
+    namespace = "com.invictus.xmd"
     compileSdk = 34
 
     defaultConfig {
-        applicationId = "com.utsav.ffdownloader"
+        applicationId = "com.invictus.xmd"
         minSdk = 26
         targetSdk = 34
         versionCode = 3

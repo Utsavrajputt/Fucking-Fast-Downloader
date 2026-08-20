@@ -21,7 +21,7 @@
         android:icon="@mipmap/xmd"
         android:roundIcon="@mipmap/xmd"
         android:label="@string/app_name"
-        android:theme="@style/Theme.FFDownloader"
+        android:theme="@style/Theme.Xmd"
         android:usesCleartextTraffic="false">
 
         <activity

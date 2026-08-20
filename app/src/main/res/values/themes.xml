@@ -1,6 +1,6 @@
 <?xml version="1.0" encoding="utf-8"?>
 <resources>
-    <style name="Theme.FFDownloader" parent="Theme.MaterialComponents.DayNight.NoActionBar">
+    <style name="Theme.Xmd" parent="Theme.MaterialComponents.DayNight.NoActionBar">
         <item name="colorPrimary">@color/ff_accent</item>
         <item name="colorPrimaryDark">@color/ff_bg</item>
         <item name="colorAccent">@color/ff_accent</item>
