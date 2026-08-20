@@ -29,6 +29,48 @@ object BookmarkRepository {
         if (::dao.isInitialized) return
         dao = AppDatabase.get(context).bookmarkDao()
         bookmarks = dao.observeAll()
+        seedDefaultBookmarks()
+    }
+
+    // Default speed-dial shortcuts. Seeded on every init(), but by URL --
+    // any URL already present (whether still exactly as seeded, renamed, or
+    // previously removed by the user and re-added elsewhere) is left alone,
+    // so this only ever fills in ones that are missing rather than
+    // duplicating or resurrecting anything the user deleted... actually it
+    // *will* re-add one the user deleted, since deletion just removes the
+    // row and there's no separate "don't reseed this" marker; that's an
+    // accepted tradeoff to keep this simple for a fixed, curated list like
+    // this one rather than tracking per-shortcut dismissal state.
+    private val DEFAULT_BOOKMARKS = listOf(
+        "Vegamovies" to "https://new2.vegamovies.futbol/",
+        "RogMovies" to "https://new2.rogmovies.click/",
+        "HDHub4u" to "https://new1.hdhub4u.af/?utm=mn1",
+        "DesireMovies" to "https://1desiremovies.wales/",
+        "FitGirl Repacks" to "https://fitgirl-repacks.site/popular-repacks-of-the-year/",
+        "TeraBox Downloader" to "https://teradownloader.com/"
+    )
+
+    private fun seedDefaultBookmarks() {
+        scope.launch {
+            val existing = runCatching { dao.getAll() }.getOrDefault(emptyList())
+            val existingUrls = existing.map { it.url }.toSet()
+            var nextOrder = (existing.maxOfOrNull { it.sortOrder } ?: -1) + 1
+            DEFAULT_BOOKMARKS.forEach { (title, url) ->
+                if (url !in existingUrls) {
+                    runCatching {
+                        dao.upsert(
+                            Bookmark(
+                                id = UUID.randomUUID().toString(),
+                                title = title,
+                                url = url,
+                                sortOrder = nextOrder
+                            )
+                        )
+                    }
+                    nextOrder++
+                }
+            }
+        }
     }
 
     fun add(title: String, url: String) {

@@ -35,7 +35,7 @@ Use the issue templates — they ask for the info that's usually needed to act o
 
 ## Code style
 
-- Kotlin, following the project's existing conventions (see any file under `app/src/main/java/com/utsav/ffdownloader/` for reference).
+- Kotlin, following the project's existing conventions (see any file under `app/src/main/java/com/invictus/xmd/` for reference).
 - Prefer small, well-named functions over large ones; the existing `core/` classes (`LinkParser`, `CategoryDetector`, `DownloadEngine`) are good examples of the granularity we aim for.
 
 ## License
