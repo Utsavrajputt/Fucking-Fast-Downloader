@@ -3,12 +3,6 @@
 All notable changes to **Xmd** are documented in this file.
 The format loosely follows [Keep a Changelog](https://keepachangelog.com/), and versioning follows [SemVer](https://semver.org/) with pre-release identifiers (`-beta.N`, `-rc.N`, ...) leading up to `1.0.0`.
 
-## [Unreleased]
-
-Changes staged for the next release. Update this section as you work; it's
-what pre-release builds (`vX.Y.Z-beta.N`, `-rc.N`, etc.) pull their release
-notes from until a matching `## [X.Y.Z]` heading exists below.
-
 ## [1.0.0-beta.1] - 2026-08-20
 
 🚀 **First public pre-release** of Xmd — Xtreme Media Downloader.
