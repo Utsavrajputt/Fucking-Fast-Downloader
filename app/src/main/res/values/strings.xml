@@ -25,30 +25,10 @@
     <string name="settings_connections">Connections per download</string>
     <string name="settings_speed_limit">Speed limit per download (KB/s, 0 = unlimited)</string>
     <string name="settings_max_concurrent">Max simultaneous downloads (1–5)</string>
+    <string name="settings_auto_retry">Auto-retry on network error</string>
+    <string name="settings_auto_retry_hint">Retries up to 3 times automatically on connection timeout/drop. Expired links still need a manual retry.</string>
     <string name="settings_save">Save</string>
     <string name="action_add">Add</string>
     <string name="action_dismiss">Dismiss</string>
     <string name="clipboard_link_detected">Link detected in clipboard: %1$s</string>
-
-    <!-- Browser tab -->
-    <string name="hint_url">Search or type a URL</string>
-    <string name="action_back">Back</string>
-    <string name="action_forward">Forward</string>
-    <string name="action_reload">Reload</string>
-    <string name="action_new_tab">New tab</string>
-    <string name="action_tabs">Tabs</string>
-    <string name="action_more">More options</string>
-    <string name="action_add_to_downloads">Add to downloads</string>
-    <string name="action_add_shortcut">Add shortcut</string>
-    <string name="label_shortcuts">SHORTCUTS</string>
-    <string name="label_bookmark_placeholder">Shortcut</string>
-    <string name="hint_bookmark_title">Name</string>
-    <string name="add_bookmark_title">Add shortcut</string>
-    <string name="edit_bookmark_title">Edit shortcut</string>
-    <string name="action_delete">Delete</string>
-    <string name="link_found_toast">Link added to Home — switch to Downloads to start it</string>
-    <string name="bookmark_needs_url">Enter a valid URL</string>
-    <string name="download_confirm_title">Add to downloads?</string>
-    <string name="download_confirm_message">%1$s</string>
-    <string name="bookmark_added_toast">Shortcut added</string>
 </resources>

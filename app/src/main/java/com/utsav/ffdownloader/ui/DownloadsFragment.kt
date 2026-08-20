@@ -68,7 +68,8 @@ class DownloadsFragment : Fragment() {
 
             // ── Cancel All / Retry All -- same button slot, context-switches ──
             val hasActive = list.any {
-                it.status == ItemStatus.DOWNLOADING || it.status == ItemStatus.PAUSED
+                it.status == ItemStatus.DOWNLOADING || it.status == ItemStatus.PAUSED ||
+                it.status == ItemStatus.RETRYING
             }
             val hasFailed = list.any { it.status == ItemStatus.FAILED }
             val hasClearable = list.any {
@@ -105,6 +106,7 @@ class DownloadsFragment : Fragment() {
                 it.status == ItemStatus.NEEDS_CHALLENGE
             }
             val paused  = list.count { it.status == ItemStatus.PAUSED }
+            val retrying = list.count { it.status == ItemStatus.RETRYING }
             val saving  = list.count { it.status == ItemStatus.SAVING }
             val done    = list.count { it.status == ItemStatus.DONE }
             val failed  = list.count { it.status == ItemStatus.FAILED }
@@ -114,6 +116,7 @@ class DownloadsFragment : Fragment() {
             if (ready > 0)       parts += "$ready ready"
             if (resolving > 0)   parts += "$resolving resolving"
             if (paused > 0)      parts += "$paused paused"
+            if (retrying > 0)    parts += "$retrying retrying"
             if (saving > 0)      parts += "$saving saving"
             if (done > 0)        parts += "$done done"
             if (failed > 0)      parts += "$failed failed"

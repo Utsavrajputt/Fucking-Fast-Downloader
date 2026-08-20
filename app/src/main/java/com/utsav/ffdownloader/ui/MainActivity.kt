@@ -15,7 +15,6 @@ import android.widget.EditText
 import android.widget.RadioButton
 import android.widget.RadioGroup
 import android.widget.Toast
-import androidx.activity.addCallback
 import androidx.activity.result.contract.ActivityResultContracts
 import androidx.appcompat.app.AppCompatActivity
 import androidx.core.content.ContextCompat
@@ -38,7 +37,7 @@ import okhttp3.OkHttpClient
 import java.util.concurrent.TimeUnit
 import kotlin.coroutines.resume
 
-class MainActivity : AppCompatActivity(), HomeFragment.Callbacks, DownloadsFragment.Callbacks, BrowserFragment.Callbacks {
+class MainActivity : AppCompatActivity(), HomeFragment.Callbacks, DownloadsFragment.Callbacks {
 
     // ── HTTP client (resolve step) ────────────────────────────────────────
     private val client = OkHttpClient.Builder()
@@ -92,13 +91,10 @@ class MainActivity : AppCompatActivity(), HomeFragment.Callbacks, DownloadsFragm
         // Add fragments only on a fresh start (not after config-change)
         if (savedInstanceState == null) {
             val home      = HomeFragment()
-            val browser   = BrowserFragment()
             val downloads = DownloadsFragment()
             supportFragmentManager.beginTransaction()
                 .add(R.id.fragmentContainer, home,      TAG_HOME)
-                .add(R.id.fragmentContainer, browser,   TAG_BROWSER)
                 .add(R.id.fragmentContainer, downloads, TAG_DOWNLOADS)
-                .hide(browser)
                 .hide(downloads)   // Home is the initial tab
                 .commit()
         }
@@ -108,54 +104,21 @@ class MainActivity : AppCompatActivity(), HomeFragment.Callbacks, DownloadsFragm
             when (item.itemId) {
                 R.id.nav_home -> {
                     showFragment(TAG_HOME)
-                    toolbar.visibility = android.view.View.VISIBLE
                     supportActionBar?.title = getString(R.string.app_name)
-                }
-                R.id.nav_browser -> {
-                    showFragment(TAG_BROWSER)
-                    // The Browser fragment's own address bar is the top bar here
-                    // (with its own reload/tabs/overflow controls) -- the shared
-                    // app toolbar (and its "Browser" title) would just duplicate it.
-                    toolbar.visibility = android.view.View.GONE
                 }
                 R.id.nav_downloads -> {
                     showFragment(TAG_DOWNLOADS)
-                    toolbar.visibility = android.view.View.VISIBLE
                     supportActionBar?.title = "Downloads"
                 }
             }
             true
         }
 
-        // Back handling, gesture or button:
-        //  1. Browser tab with page history / a loaded page -> step back
-        //     through it (or back to the speed dial). Handled entirely by
-        //     BrowserFragment.onBackPressed().
-        //  2. Browser tab already on the speed dial (or any other tab) ->
-        //     jump to the Home tab, rather than falling straight through to
-        //     the default behavior and closing the app. This is what used to
-        //     be missing: searching or opening a site, then going back, used
-        //     to exit the app outright instead of landing on Home.
-        //  3. Already on the Home tab -> default behavior (exits the app).
-        onBackPressedDispatcher.addCallback(this) {
-            val browser = supportFragmentManager.findFragmentByTag(TAG_BROWSER) as? BrowserFragment
-            if (browser?.isVisible == true && browser.onBackPressed()) {
-                return@addCallback
-            }
-            if (bottomNav.selectedItemId != R.id.nav_home) {
-                bottomNav.selectedItemId = R.id.nav_home
-                return@addCallback
-            }
-            isEnabled = false
-            onBackPressedDispatcher.onBackPressed()
-            isEnabled = true
-        }
-
         // Active-download badge on the Downloads tab
         QueueRepository.items.observe(this) { list ->
             val active = list.count {
                 it.status == ItemStatus.DOWNLOADING || it.status == ItemStatus.PAUSED ||
-                it.status == ItemStatus.SAVING
+                it.status == ItemStatus.SAVING || it.status == ItemStatus.RETRYING
             }
             val badge = bottomNav.getOrCreateBadge(R.id.nav_downloads)
             if (active > 0) {
@@ -195,14 +158,10 @@ class MainActivity : AppCompatActivity(), HomeFragment.Callbacks, DownloadsFragm
     private fun showFragment(tag: String) {
         val fm        = supportFragmentManager
         val home      = fm.findFragmentByTag(TAG_HOME)      ?: return
-        val browser   = fm.findFragmentByTag(TAG_BROWSER)   ?: return
         val downloads = fm.findFragmentByTag(TAG_DOWNLOADS) ?: return
         fm.beginTransaction().apply {
-            when (tag) {
-                TAG_HOME      -> { show(home); hide(browser); hide(downloads) }
-                TAG_BROWSER   -> { hide(home); show(browser); hide(downloads) }
-                else          -> { hide(home); hide(browser); show(downloads) }
-            }
+            if (tag == TAG_HOME) { show(home); hide(downloads) }
+            else                 { hide(home); show(downloads) }
         }.commit()
     }
 
@@ -234,12 +193,6 @@ class MainActivity : AppCompatActivity(), HomeFragment.Callbacks, DownloadsFragm
             }
         }
         DownloadService.start(this)
-    }
-
-    // ── BrowserFragment.Callbacks ───────────────────────────────────────────
-
-    override fun openSettings() {
-        showSettingsDialog()
     }
 
     // ── DownloadsFragment.Callbacks ─────────────────────────────────────────
@@ -326,14 +279,6 @@ class MainActivity : AppCompatActivity(), HomeFragment.Callbacks, DownloadsFragm
             QueueRepository.update(item.id) {
                 it.copy(directUrl = item.sourceUrl, status = ItemStatus.READY)
             }
-            // Same as the share-link branch below: without this, an item that
-            // becomes READY after the worker pool has already exhausted the
-            // queue (or was never started) sits at READY forever -- no live
-            // worker left to claim it. This branch was missing the call,
-            // which is why plain direct-download links (pixeldrain, hubcloud
-            // generated links, etc.) got stuck on "Ready to download" while
-            // share links (which do call this) downloaded fine.
-            DownloadService.start(this@MainActivity)
             return
         }
         if (!LinkParser.isShareLink(item.sourceUrl)) {
@@ -426,6 +371,7 @@ class MainActivity : AppCompatActivity(), HomeFragment.Callbacks, DownloadsFragm
         val group           = view.findViewById<RadioGroup>(R.id.connectionsGroup)
         val speedInput      = view.findViewById<EditText>(R.id.speedLimitInput)
         val concurrentInput = view.findViewById<EditText>(R.id.maxConcurrentInput)
+        val autoRetrySwitch = view.findViewById<com.google.android.material.switchmaterial.SwitchMaterial>(R.id.autoRetrySwitch)
 
         val idForConnections = mapOf(
             2 to R.id.conn2, 4 to R.id.conn4, 8 to R.id.conn8, 16 to R.id.conn16
@@ -435,6 +381,7 @@ class MainActivity : AppCompatActivity(), HomeFragment.Callbacks, DownloadsFragm
         )).isChecked = true
         speedInput.setText(Settings.speedLimitKBps().toString())
         concurrentInput.setText(Settings.maxConcurrentDownloads().toString())
+        autoRetrySwitch.isChecked = Settings.autoRetryEnabled()
 
         AlertDialog.Builder(this)
             .setTitle(R.string.settings_title)
@@ -446,6 +393,7 @@ class MainActivity : AppCompatActivity(), HomeFragment.Callbacks, DownloadsFragm
                 Settings.setConnectionsPerDownload(connections)
                 Settings.setSpeedLimitKBps(speedInput.text?.toString()?.toIntOrNull() ?: 0)
                 Settings.setMaxConcurrentDownloads(concurrentInput.text?.toString()?.toIntOrNull() ?: 2)
+                Settings.setAutoRetryEnabled(autoRetrySwitch.isChecked)
                 Toast.makeText(this, "Settings saved", Toast.LENGTH_SHORT).show()
             }
             .setNegativeButton(android.R.string.cancel, null)
@@ -456,7 +404,6 @@ class MainActivity : AppCompatActivity(), HomeFragment.Callbacks, DownloadsFragm
 
     companion object {
         private const val TAG_HOME      = "home"
-        private const val TAG_BROWSER   = "browser"
         private const val TAG_DOWNLOADS = "downloads"
     }
 }

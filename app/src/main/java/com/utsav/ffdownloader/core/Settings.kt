@@ -11,6 +11,7 @@ object Settings {
     private const val KEY_CONNECTIONS = "connections_per_download"
     private const val KEY_SPEED_LIMIT_KBPS = "speed_limit_kbps"
     private const val KEY_MAX_CONCURRENT = "max_concurrent_downloads"
+    private const val KEY_AUTO_RETRY = "auto_retry_network_errors"
 
     private lateinit var prefs: SharedPreferences
 
@@ -32,5 +33,14 @@ object Settings {
     fun maxConcurrentDownloads(): Int = prefs.getInt(KEY_MAX_CONCURRENT, 2)
     fun setMaxConcurrentDownloads(value: Int) {
         prefs.edit().putInt(KEY_MAX_CONCURRENT, value.coerceIn(1, 5)).apply()
+    }
+
+    /** Auto-retry a failed download up to 3 times when it fails on a plain
+     *  network error (timeout, connection dropped, DNS failure etc.) --
+     *  never for server/link-level failures like an expired share link,
+     *  those still need a manual Retry. Default ON. */
+    fun autoRetryEnabled(): Boolean = prefs.getBoolean(KEY_AUTO_RETRY, true)
+    fun setAutoRetryEnabled(value: Boolean) {
+        prefs.edit().putBoolean(KEY_AUTO_RETRY, value).apply()
     }
 }

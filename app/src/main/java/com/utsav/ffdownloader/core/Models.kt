@@ -11,6 +11,7 @@ enum class ItemStatus {
     READY,
     DOWNLOADING,
     PAUSED,
+    RETRYING,
     SAVING,
     DONE,
     FAILED

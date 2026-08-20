@@ -60,6 +60,7 @@ class QueueAdapter(
                 "⬇  ${if (item.bytesTotal > 0) "$pct%" else "Downloading…"}"
             }
             ItemStatus.PAUSED           -> "⏸  Paused"
+            ItemStatus.RETRYING         -> "🔁 ${item.error ?: "Retrying…"}"
             ItemStatus.SAVING           -> "💾 Saving to storage…"
             ItemStatus.DONE             -> "✔  Done"
             ItemStatus.FAILED           -> "✖  ${item.error ?: "Failed"}"
@@ -67,7 +68,7 @@ class QueueAdapter(
 
         // ── Size line (MB done / total MB) ────────────────────────────────
         when (item.status) {
-            ItemStatus.DOWNLOADING, ItemStatus.PAUSED, ItemStatus.SAVING -> {
+            ItemStatus.DOWNLOADING, ItemStatus.PAUSED, ItemStatus.SAVING, ItemStatus.RETRYING -> {
                 when {
                     item.bytesTotal > 0 -> {
                         holder.sizeText.text =
@@ -123,8 +124,11 @@ class QueueAdapter(
         }
 
         // ── Action buttons ────────────────────────────────────────────────
-        val showActions = item.status == ItemStatus.DOWNLOADING || item.status == ItemStatus.PAUSED
+        val showActions = item.status == ItemStatus.DOWNLOADING || item.status == ItemStatus.PAUSED ||
+            item.status == ItemStatus.RETRYING
         holder.actions.visibility = if (showActions) View.VISIBLE else View.GONE
+        // No live connection to pause during an auto-retry backoff wait -- only Cancel applies.
+        holder.pauseResume.visibility = if (item.status == ItemStatus.RETRYING) View.GONE else View.VISIBLE
         holder.pauseResume.text = if (item.status == ItemStatus.PAUSED) {
             context.getString(R.string.action_resume)
         } else {
@@ -150,6 +154,7 @@ class QueueAdapter(
         ItemStatus.READY           -> R.color.ff_accent
         ItemStatus.DOWNLOADING     -> R.color.ff_accent
         ItemStatus.PAUSED          -> R.color.ff_warning
+        ItemStatus.RETRYING        -> R.color.ff_warning
         ItemStatus.SAVING          -> R.color.ff_accent
         ItemStatus.DONE            -> R.color.ff_success
         ItemStatus.FAILED          -> R.color.ff_error

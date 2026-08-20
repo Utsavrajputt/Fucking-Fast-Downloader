@@ -29,6 +29,7 @@ import okhttp3.Protocol
 import java.io.File
 import java.io.FileInputStream
 import java.io.FileOutputStream
+import java.io.IOException
 import java.util.concurrent.ConcurrentHashMap
 import java.util.concurrent.TimeUnit
 
@@ -48,6 +49,7 @@ class DownloadService : LifecycleService() {
         const val EXTRA_ITEM_ID = "extra_item_id"
         private const val NOTIFICATION_ID = 42
         private const val BETWEEN_CLAIM_DELAY_MS = 500L
+        private const val MAX_AUTO_RETRIES = 3
 
         fun start(context: Context) {
             val intent = Intent(context, DownloadService::class.java).setAction(ACTION_START)
@@ -144,8 +146,23 @@ class DownloadService : LifecycleService() {
                 engines[id]?.resume()
                 QueueRepository.update(id) { it.copy(status = ItemStatus.DOWNLOADING) }
             }
-            ACTION_CANCEL_ITEM -> intent.getStringExtra(EXTRA_ITEM_ID)?.let { engines[it]?.cancel() }
-            ACTION_CANCEL_ALL -> engines.values.forEach { it.cancel() }
+            ACTION_CANCEL_ITEM -> intent.getStringExtra(EXTRA_ITEM_ID)?.let { id ->
+                engines[id]?.cancel()
+                // During an auto-retry backoff wait there's no live engine (it was
+                // removed before the delay), so there's nothing for .cancel() above
+                // to interrupt -- mark it cancelled directly; the retry loop checks
+                // this right after its delay and bails instead of trying again.
+                val current = QueueRepository.current().firstOrNull { it.id == id }
+                if (current?.status == ItemStatus.RETRYING) {
+                    QueueRepository.update(id) { it.copy(status = ItemStatus.FAILED, error = "Cancelled") }
+                }
+            }
+            ACTION_CANCEL_ALL -> {
+                engines.values.forEach { it.cancel() }
+                QueueRepository.current().filter { it.status == ItemStatus.RETRYING }.forEach { item ->
+                    QueueRepository.update(item.id) { it.copy(status = ItemStatus.FAILED, error = "Cancelled") }
+                }
+            }
         }
         return START_NOT_STICKY
     }
@@ -183,73 +200,102 @@ class DownloadService : LifecycleService() {
         directUrlAtClaim: String?,
         categoryAtClaim: DownloadCategory
     ) {
-        var destinationFile: File? = null
+        var attempt = 0
 
-        val engine = DownloadEngine(
-            client = client,
-            progress = { done, total, speed ->
-                QueueRepository.update(itemId) { it.copy(bytesDone = done, bytesTotal = total, speedBps = speed) }
+        while (true) {
+            var destinationFile: File? = null
+
+            val engine = DownloadEngine(
+                client = client,
+                progress = { done, total, speed ->
+                    QueueRepository.update(itemId) { it.copy(bytesDone = done, bytesTotal = total, speedBps = speed) }
+                    updateNotification()
+                },
+                log = { },
+                connections = Settings.connectionsPerDownload(),
+                speedLimitBytesPerSec = Settings.speedLimitKBps().toLong() * 1024L
+            )
+            engines[itemId] = engine
+
+            try {
+                val directUrl = directUrlAtClaim ?: throw RuntimeException("No resolved URL")
+                val fileName = DownloadEngine.filenameFromLink(sourceUrl)
+                    .ifBlank { DownloadEngine.filenameFromUrl(directUrl) }
+
+                // The source URL alone (e.g. a FuckingFast share link) often has no visible
+                // extension -- re-detect the category now that the real filename is resolved,
+                // so it doesn't wrongly land in Others just because the share link was opaque.
+                val category = CategoryDetector.detect(directUrl, hint = fileName)
+                    .takeIf { it != DownloadCategory.default() } ?: categoryAtClaim
+                QueueRepository.update(itemId) { it.copy(fileName = fileName, category = category) }
+
+                // Download into the app's private cache first. Public/shared storage
+                // (/sdcard/...) is served through Android's FUSE emulation layer, where
+                // every read/write syscall carries extra overhead -- that overhead is
+                // what was capping speed well below Chrome's. The private cache sits on
+                // the real filesystem with none of that overhead, so the download itself
+                // runs at full network speed. The finished file is then moved to
+                // /sdcard/umd/ in one continuous copy, which is far faster than paying
+                // the FUSE tax on every chunk of the download.
+                val tempDir = File(cacheDir, "umd_temp/${category.folderName}")
+                val tempFile = File(tempDir, fileName)
+                destinationFile = tempFile
+
+                val finalDir = File(Environment.getExternalStorageDirectory(), "umd/${category.folderName}")
+                val finalFile = File(finalDir, fileName)
+
+                // Pause (engine.pause()) blocks in-place inside downloadAuto and never throws here --
+                // the engine stays registered in `engines` so Resume can call engine.resume() on the
+                // very same in-flight connection. Only a genuine Cancel throws, ending this coroutine.
+                engine.downloadAuto(directUrl, tempFile)
+
+                QueueRepository.update(itemId) { it.copy(status = ItemStatus.SAVING) }
+                withContext(Dispatchers.IO) { moveToPublicStorage(tempFile, finalFile) }
+                destinationFile = finalFile
+
+                QueueRepository.update(itemId) { it.copy(status = ItemStatus.DONE) }
+                return
+            } catch (e: DownloadCancelledException) {
+                destinationFile?.delete()
+                QueueRepository.update(itemId) { it.copy(status = ItemStatus.FAILED, error = "Cancelled") }
+                return
+            } catch (e: Exception) {
+                // Only a plain network-level failure (timeout, connection dropped, DNS
+                // failure, TLS handshake failure -- all surface as IOException from
+                // OkHttp) is eligible for auto-retry. Server/link-level failures --
+                // expired share link, bad HTTP status, incomplete segment -- are our
+                // own explicit RuntimeExceptions, not IOExceptions, and deliberately
+                // fall straight through to FAILED since retrying the same dead link
+                // automatically would just burn battery/data for nothing; those need
+                // the user's manual Retry (which can re-resolve a fresh link).
+                val isNetworkError = e is IOException
+                if (isNetworkError && Settings.autoRetryEnabled() && attempt < MAX_AUTO_RETRIES) {
+                    attempt++
+                    engines.remove(itemId)
+                    QueueRepository.update(itemId) {
+                        it.copy(
+                            status = ItemStatus.RETRYING,
+                            error = "Network error — retrying ($attempt/$MAX_AUTO_RETRIES)…"
+                        )
+                    }
+                    updateNotification()
+                    kotlinx.coroutines.delay(2_000L * attempt) // 2s, 4s, 6s backoff
+
+                    // Cancel during the wait (no live engine to interrupt at that
+                    // point) is handled by ACTION_CANCEL_ITEM/ALL setting the item
+                    // to FAILED directly -- check for that here instead of blindly
+                    // retrying a download the user already cancelled.
+                    val stillPending = QueueRepository.current().firstOrNull { it.id == itemId }
+                    if (stillPending == null || stillPending.status != ItemStatus.RETRYING) return
+
+                    continue
+                }
+                QueueRepository.update(itemId) { it.copy(status = ItemStatus.FAILED, error = e.message) }
+                return
+            } finally {
+                engines.remove(itemId)
                 updateNotification()
-            },
-            log = { },
-            connections = Settings.connectionsPerDownload(),
-            speedLimitBytesPerSec = Settings.speedLimitKBps().toLong() * 1024L
-        )
-        engines[itemId] = engine
-
-        try {
-            val directUrl = directUrlAtClaim ?: throw RuntimeException("No resolved URL")
-
-            // The URL path alone is unreliable for id-based download endpoints
-            // (pixeldrain.dev/api/file/<id>?download, hubcloud-generated links,
-            // etc.) -- that path segment is just an opaque id, not the real
-            // filename, which only ever appears in the response's
-            // Content-Disposition header. Ask the server first; fall back to
-            // the old URL/fragment-based naming if it doesn't answer with one.
-            val realName = withContext(Dispatchers.IO) { DownloadEngine.probeRealFilename(client, directUrl) }
-            val fileName = realName
-                ?: DownloadEngine.filenameFromLink(sourceUrl).ifBlank { DownloadEngine.filenameFromUrl(directUrl) }
-
-            // The source URL alone (e.g. a FuckingFast share link) often has no visible
-            // extension -- re-detect the category now that the real filename is resolved,
-            // so it doesn't wrongly land in Others just because the share link was opaque.
-            val category = CategoryDetector.detect(directUrl, hint = fileName)
-                .takeIf { it != DownloadCategory.default() } ?: categoryAtClaim
-            QueueRepository.update(itemId) { it.copy(fileName = fileName, category = category) }
-
-            // Download into the app's private cache first. Public/shared storage
-            // (/sdcard/...) is served through Android's FUSE emulation layer, where
-            // every read/write syscall carries extra overhead -- that overhead is
-            // what was capping speed well below Chrome's. The private cache sits on
-            // the real filesystem with none of that overhead, so the download itself
-            // runs at full network speed. The finished file is then moved to
-            // /sdcard/umd/ in one continuous copy, which is far faster than paying
-            // the FUSE tax on every chunk of the download.
-            val tempDir = File(cacheDir, "umd_temp/${category.folderName}")
-            val tempFile = File(tempDir, fileName)
-            destinationFile = tempFile
-
-            val finalDir = File(Environment.getExternalStorageDirectory(), "umd/${category.folderName}")
-            val finalFile = File(finalDir, fileName)
-
-            // Pause (engine.pause()) blocks in-place inside downloadAuto and never throws here --
-            // the engine stays registered in `engines` so Resume can call engine.resume() on the
-            // very same in-flight connection. Only a genuine Cancel throws, ending this coroutine.
-            engine.downloadAuto(directUrl, tempFile)
-
-            QueueRepository.update(itemId) { it.copy(status = ItemStatus.SAVING) }
-            withContext(Dispatchers.IO) { moveToPublicStorage(tempFile, finalFile) }
-            destinationFile = finalFile
-
-            QueueRepository.update(itemId) { it.copy(status = ItemStatus.DONE) }
-        } catch (e: DownloadCancelledException) {
-            destinationFile?.delete()
-            QueueRepository.update(itemId) { it.copy(status = ItemStatus.FAILED, error = "Cancelled") }
-        } catch (e: Exception) {
-            QueueRepository.update(itemId) { it.copy(status = ItemStatus.FAILED, error = e.message) }
-        } finally {
-            engines.remove(itemId)
-            updateNotification()
+            }
         }
     }
 

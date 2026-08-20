@@ -71,7 +71,7 @@ object QueueRepository {
             val recovered = persisted.map { item ->
                 when (item.status) {
                     ItemStatus.RESOLVING -> item.copy(status = ItemStatus.PENDING)
-                    ItemStatus.DOWNLOADING, ItemStatus.SAVING ->
+                    ItemStatus.DOWNLOADING, ItemStatus.SAVING, ItemStatus.RETRYING ->
                         if (item.directUrl != null) item.copy(status = ItemStatus.READY)
                         else item.copy(status = ItemStatus.PENDING)
                     else -> item
