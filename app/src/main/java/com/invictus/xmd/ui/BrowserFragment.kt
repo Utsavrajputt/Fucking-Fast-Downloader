@@ -111,6 +111,15 @@ class BrowserFragment : Fragment() {
     private lateinit var suggestionAdapter: SuggestionAdapter
     private var lastDetectedLink: String? = null
     private var suggestJob: Job? = null
+    // Set right before loadUrl() when the *current* tab had no url yet (a
+    // genuinely fresh/new tab's first navigation). The shared WebView still
+    // carries whatever back/forward history the previously-active tab left
+    // behind, so without clearing it here, a fresh tab's first load would
+    // stack on top of that old history -- meaning Back on this brand-new
+    // tab could walk back into a *different* tab's earlier pages instead of
+    // landing on the speed dial. Consumed (cleared to false) the next time
+    // onPageFinished fires.
+    private var clearHistoryOnNextPageFinish = false
 
     private val tabs = mutableListOf(BrowserTab(id = 0L))
     private var currentTabIndex = 0
@@ -230,6 +239,14 @@ class BrowserFragment : Fragment() {
             override fun onPageFinished(view: WebView, url: String?) {
                 pageProgress.visibility = View.GONE
                 hideNavLoadingVeil()
+                if (clearHistoryOnNextPageFinish) {
+                    clearHistoryOnNextPageFinish = false
+                    // Drops every back/forward entry except this one -- so a
+                    // fresh tab's history starts clean instead of continuing
+                    // on top of whatever the previously-active tab left in
+                    // the shared WebView.
+                    view.clearHistory()
+                }
                 val title = view.title?.takeIf { t -> t.isNotBlank() } ?: url.orEmpty()
                 tabs.getOrNull(currentTabIndex)?.let {
                     it.url = url
@@ -425,6 +442,11 @@ class BrowserFragment : Fragment() {
         hideSuggestions()
         showWebView()
         showNavLoadingVeil()
+        // This tab had no url yet -> its first-ever navigation. See
+        // clearHistoryOnNextPageFinish's doc for why this matters.
+        if (tabs.getOrNull(currentTabIndex)?.url.isNullOrBlank()) {
+            clearHistoryOnNextPageFinish = true
+        }
         webView.loadUrl(url)
         // Drop keyboard focus so the address bar doesn't stay expanded.
         urlInput.clearFocus()
