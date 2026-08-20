@@ -9,8 +9,10 @@ import android.os.Build
 import android.os.Bundle
 import android.os.Environment
 import android.provider.Settings as AndroidSettings
+import android.view.GestureDetector
 import android.view.Menu
 import android.view.MenuItem
+import android.view.MotionEvent
 import android.widget.EditText
 import android.widget.RadioButton
 import android.widget.RadioGroup
@@ -40,6 +42,50 @@ import java.util.concurrent.TimeUnit
 import kotlin.coroutines.resume
 
 class MainActivity : AppCompatActivity(), HomeFragment.Callbacks, DownloadsFragment.Callbacks, BrowserFragment.Callbacks, HistoryFragment.Callbacks {
+
+    private lateinit var bottomNav: BottomNavigationView
+
+    // ── Swipe-to-switch-tabs (bottom nav) ───────────────────────────────
+    // Was previously wired into the Browser fragment's WebView (switching
+    // between open website tabs there); moved here so a fast horizontal
+    // swipe anywhere in the app instead switches between the Home/Browser/
+    // Downloads bottom nav destinations. Living in dispatchTouchEvent (as
+    // opposed to a per-view touch listener) is what lets it see swipes
+    // that happen over a WebView or RecyclerView -- those views consume
+    // their own touch events before a listener on a parent view would ever
+    // see them, but the Activity sees every touch event first regardless.
+    // Deliberately conservative (2x horizontal-over-vertical dominance + a
+    // minimum distance) so it doesn't fire on ordinary vertical scrolling,
+    // and it never consumes the event (super.dispatchTouchEvent still runs
+    // unconditionally below), so normal scrolling/tapping/zooming is
+    // completely unaffected.
+    private val bottomNavSwipeOrder = listOf(R.id.nav_home, R.id.nav_browser, R.id.nav_downloads)
+
+    private val bottomNavSwipeDetector by lazy {
+        val minDistancePx = 80 * resources.displayMetrics.density
+        GestureDetector(this, object : GestureDetector.SimpleOnGestureListener() {
+            override fun onFling(
+                e1: MotionEvent?, e2: MotionEvent, velocityX: Float, velocityY: Float
+            ): Boolean {
+                if (e1 == null) return false
+                val dx = e2.x - e1.x
+                val dy = e2.y - e1.y
+                if (kotlin.math.abs(dx) < minDistancePx) return false
+                if (kotlin.math.abs(dx) < kotlin.math.abs(dy) * 2) return false
+                val currentIndex = bottomNavSwipeOrder.indexOf(bottomNav.selectedItemId)
+                if (currentIndex == -1) return false
+                val step = if (dx < 0) 1 else -1
+                val newIndex = (currentIndex + step).coerceIn(0, bottomNavSwipeOrder.size - 1)
+                if (newIndex != currentIndex) bottomNav.selectedItemId = bottomNavSwipeOrder[newIndex]
+                return true
+            }
+        })
+    }
+
+    override fun dispatchTouchEvent(ev: MotionEvent): Boolean {
+        if (::bottomNav.isInitialized) bottomNavSwipeDetector.onTouchEvent(ev)
+        return super.dispatchTouchEvent(ev)
+    }
 
     // ── HTTP client (resolve step) ────────────────────────────────────────
     private val client = OkHttpClient.Builder()
@@ -122,7 +168,7 @@ class MainActivity : AppCompatActivity(), HomeFragment.Callbacks, DownloadsFragm
                 .commit()
         }
 
-        val bottomNav = findViewById<BottomNavigationView>(R.id.bottomNav)
+        bottomNav = findViewById(R.id.bottomNav)
         bottomNav.setOnItemSelectedListener { item ->
             when (item.itemId) {
                 R.id.nav_home -> {

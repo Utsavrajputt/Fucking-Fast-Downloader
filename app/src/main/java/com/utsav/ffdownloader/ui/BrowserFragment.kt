@@ -4,10 +4,8 @@ import android.annotation.SuppressLint
 import android.os.Bundle
 import android.text.Editable
 import android.text.TextWatcher
-import android.view.GestureDetector
 import android.view.KeyEvent
 import android.view.LayoutInflater
-import android.view.MotionEvent
 import android.view.View
 import android.view.ViewGroup
 import android.view.inputmethod.EditorInfo
@@ -107,43 +105,6 @@ class BrowserFragment : Fragment() {
     private var currentTabIndex = 0
     private var nextTabId = 1L
 
-    // ── Swipe-to-switch-tabs ─────────────────────────────────────────────
-    // A fast, mostly-horizontal fling anywhere on the page (or the speed
-    // dial) moves to the next/previous tab -- Chrome/most mobile browsers
-    // support this. Deliberately conservative (2x horizontal-over-vertical
-    // dominance + a minimum distance) so it doesn't fire on ordinary
-    // vertical page scrolling or a horizontal-scrolling element inside the
-    // page itself (image carousels etc). The listener never consumes the
-    // touch event (setOnTouchListener always returns false below), so the
-    // WebView/page still gets completely normal scroll/tap behavior --
-    // this only *observes* the gesture stream to detect a swipe alongside it.
-    private val tabSwipeGestureDetector by lazy {
-        val minDistancePx = 80 * resources.displayMetrics.density
-        GestureDetector(requireContext(), object : GestureDetector.SimpleOnGestureListener() {
-            override fun onFling(
-                e1: MotionEvent?, e2: MotionEvent, velocityX: Float, velocityY: Float
-            ): Boolean {
-                if (e1 == null) return false
-                val dx = e2.x - e1.x
-                val dy = e2.y - e1.y
-                if (kotlin.math.abs(dx) < minDistancePx) return false
-                if (kotlin.math.abs(dx) < kotlin.math.abs(dy) * 2) return false
-                if (dx < 0) switchToTab(currentTabIndex + 1) else switchToTab(currentTabIndex - 1)
-                return true
-            }
-        })
-    }
-
-    /** Wires [tabSwipeGestureDetector] into a view without stealing its
-     *  normal touch handling (scrolling, taps, etc. all still work as-is). */
-    @SuppressLint("ClickableViewAccessibility")
-    private fun enableTabSwipe(view: View) {
-        view.setOnTouchListener { _, event ->
-            tabSwipeGestureDetector.onTouchEvent(event)
-            false
-        }
-    }
-
     // Own client instead of reusing MainActivity's -- this is a short-timeout,
     // fire-and-forget lookup that shouldn't share connection pool pressure
     // with the resolve/download clients.
@@ -225,9 +186,6 @@ class BrowserFragment : Fragment() {
         setupSpeedDial()
         setupAddressBar()
         setupSuggestions()
-
-        enableTabSwipe(webView)
-        enableTabSwipe(speedDialContainer)
 
         newTabButton.setOnClickListener { addNewTab() }
         tabsButton.setOnClickListener { showTabsDialog() }
