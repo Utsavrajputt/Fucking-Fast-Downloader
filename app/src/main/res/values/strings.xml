@@ -1,9 +1,13 @@
 <?xml version="1.0" encoding="utf-8"?>
 <resources>
+
+    <!-- App -->
     <string name="app_name">FF Downloader</string>
-    <string name="hint_links">Paste FuckingFast share links, direct links, or a fitgirl-repacks page URL — one per line</string>
+    <string name="hint_links">Paste FuckingFast share links, direct links, or a FitGirl Repacks page URL — one per line.</string>
+
+    <!-- Actions -->
     <string name="action_prepare">Prepare</string>
-    <string name="action_download">Download ready files</string>
+    <string name="action_download">Download Ready Files</string>
     <string name="action_download_direct">Download</string>
     <string name="action_pause">Pause</string>
     <string name="action_resume">Resume</string>
@@ -11,66 +15,77 @@
     <string name="action_cancel">Cancel</string>
     <string name="action_retry">Retry</string>
     <string name="action_clear">Clear</string>
-    <string name="action_retry_all">Retry all</string>
-    <string name="action_clear_all">Clear all</string>
-    <string name="action_clear_finished">Clear finished</string>
-    <string name="empty_queue">Paste some links above and tap Prepare</string>
-    <string name="challenge_title">Complete verification</string>
-    <string name="challenge_loading">Loading share page…</string>
-    <string name="download_channel_name">Downloads</string>
-    <string name="download_channel_description">Shows progress for active downloads</string>
-    <string name="only_authorized">Only download content you are authorized to access.</string>
-    <string name="action_cancel_all">Cancel all</string>
-    <string name="menu_settings">Settings</string>
-    <string name="settings_title">Download settings</string>
-    <string name="settings_connections">Connections per download</string>
-    <string name="settings_speed_limit">Speed limit per download (KB/s, 0 = unlimited)</string>
-    <string name="settings_max_concurrent">Max simultaneous downloads (1–5)</string>
-    <string name="settings_auto_retry">Auto-retry on network error</string>
-    <string name="settings_auto_retry_hint">Retries up to 3 times automatically on connection timeout/drop. Expired links still need a manual retry.</string>
-    <string name="settings_save_to_downloads">Save to Downloads folder</string>
-    <string name="settings_save_to_downloads_hint">Skip the Xmd category folders and save every file straight into your device\'s Download folder, like Chrome.</string>
-    <string name="settings_save">Save</string>
+    <string name="action_retry_all">Retry All</string>
+    <string name="action_clear_all">Clear All</string>
+    <string name="action_clear_finished">Clear Finished</string>
+    <string name="action_cancel_all">Cancel All</string>
     <string name="action_add">Add</string>
     <string name="action_dismiss">Dismiss</string>
+    <string name="action_view">View</string>
+    <string name="action_delete">Delete</string>
+
+    <!-- Downloads -->
+    <string name="empty_queue">Paste some links above and tap Prepare.</string>
+    <string name="challenge_title">Complete Verification</string>
+    <string name="challenge_loading">Loading share page…</string>
+    <string name="download_channel_name">Downloads</string>
+    <string name="download_channel_description">Shows progress for active downloads.</string>
+    <string name="only_authorized">Only download content you are authorized to access.</string>
     <string name="clipboard_link_detected">Link detected in clipboard: %1$s</string>
     <string name="download_started_toast">Starting download…</string>
-    <string name="action_view">VIEW</string>
 
-    <!-- Browser tab -->
+    <!-- Settings -->
+    <string name="menu_settings">Settings</string>
+    <string name="settings_title">Download Settings</string>
+    <string name="settings_connections">Connections per Download</string>
+    <string name="settings_speed_limit">Speed Limit per Download (KB/s, 0 = Unlimited)</string>
+    <string name="settings_max_concurrent">Maximum Simultaneous Downloads (1–5)</string>
+    <string name="settings_auto_retry">Auto Retry on Network Error</string>
+    <string name="settings_auto_retry_hint">Retries up to 3 times automatically if the connection times out or drops. Expired links still require a manual retry.</string>
+    <string name="settings_save_to_downloads">Save to Downloads Folder</string>
+    <string name="settings_save_to_downloads_hint">Save files directly to the Downloads folder instead of the app folder.</string>
+    <string name="settings_save">Save</string>
+
+    <!-- Browser -->
     <string name="hint_url">Search or type a URL</string>
     <string name="action_back">Back</string>
     <string name="action_forward">Forward</string>
     <string name="action_reload">Reload</string>
-    <string name="action_new_tab">New tab</string>
+    <string name="action_new_tab">New Tab</string>
     <string name="action_tabs">Tabs</string>
-    <string name="action_more">More options</string>
-    <string name="action_add_to_downloads">Add to downloads</string>
-    <string name="action_add_shortcut">Add shortcut</string>
+    <string name="action_more">More Options</string>
+    <string name="action_add_to_downloads">Add to Downloads</string>
+    <string name="action_add_shortcut">Add Shortcut</string>
+
+    <!-- Shortcuts -->
     <string name="label_shortcuts">SHORTCUTS</string>
     <string name="label_bookmark_placeholder">Shortcut</string>
     <string name="hint_bookmark_title">Name</string>
-    <string name="add_bookmark_title">Add shortcut</string>
-    <string name="edit_bookmark_title">Edit shortcut</string>
-    <string name="action_delete">Delete</string>
-    <string name="link_found_toast">Link added to Home — switch to Downloads to start it</string>
-    <string name="bookmark_needs_url">Enter a valid URL</string>
-    <string name="download_confirm_title">Add to downloads?</string>
+    <string name="add_bookmark_title">Add Shortcut</string>
+    <string name="edit_bookmark_title">Edit Shortcut</string>
+    <string name="link_found_toast">Link added to Home. Switch to Downloads to start downloading.</string>
+    <string name="bookmark_needs_url">Enter a valid URL.</string>
+    <string name="download_confirm_title">Add to Downloads?</string>
     <string name="download_confirm_message">%1$s</string>
-    <string name="bookmark_added_toast">Shortcut added</string>
+    <string name="bookmark_added_toast">Shortcut added.</string>
 
-    <!-- Browser overflow menu (Private DNS + History; deliberately no download options) -->
+    <!-- Browser Menu -->
     <string name="browser_menu_title">Browser</string>
     <string name="browser_menu_private_dns">Private DNS</string>
     <string name="browser_menu_history">History</string>
+
+    <!-- DNS -->
     <string name="dns_settings_title">Private DNS</string>
-    <string name="dns_mode_adguard">AdGuard (default)</string>
+    <string name="dns_mode_adguard">AdGuard (Default)</string>
     <string name="dns_mode_off">Off</string>
     <string name="dns_mode_custom">Custom</string>
     <string name="dns_custom_url_hint">DNS-over-HTTPS URL (e.g. https://dns.example.com/dns-query)</string>
-    <string name="dns_custom_url_needed">Enter a valid DoH URL</string>
+    <string name="dns_custom_url_needed">Enter a valid DNS-over-HTTPS URL.</string>
+
+    <!-- History -->
     <string name="history_title">History</string>
-    <string name="history_empty">No history yet</string>
-    <string name="history_clear_all">Clear all</string>
-    <string name="history_cleared_toast">History cleared</string>
+    <string name="history_empty">No history yet.</string>
+    <string name="history_clear_all">Clear All</string>
+    <string name="history_cleared_toast">History cleared.</string>
+
 </resources>
