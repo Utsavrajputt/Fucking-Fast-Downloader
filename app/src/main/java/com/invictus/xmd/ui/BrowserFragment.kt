@@ -80,7 +80,17 @@ class BrowserFragment : Fragment() {
      * one (it reloads [url] on switch). [title] backs the label shown in the
      * tab list.
      */
-    private data class BrowserTab(val id: Long, var url: String? = null, var title: String = "New tab")
+    private data class BrowserTab(
+        val id: Long,
+        var url: String? = null,
+        var title: String = "New tab",
+        // Per-tab WebView history/scroll snapshot (WebView.saveState). Lets tab
+        // switches restore instantly from this instead of hitting the network
+        // again via loadUrl, and keeps each tab's back/forward stack isolated
+        // from the others (previously all tabs shared one WebView history,
+        // so Back after switching tabs could land on a *different* tab's page).
+        var webViewState: android.os.Bundle? = null
+    )
 
     private lateinit var newTabButton: ImageButton
     private lateinit var urlInput: EditText
@@ -90,6 +100,7 @@ class BrowserFragment : Fragment() {
     private lateinit var overflowButton: ImageButton
     private lateinit var pageProgress: ProgressBar
     private lateinit var webView: WebView
+    private lateinit var navLoadingVeil: View
     private lateinit var speedDialContainer: View
     private lateinit var speedDialGrid: RecyclerView
     private lateinit var addLinkFab: FloatingActionButton
@@ -176,6 +187,7 @@ class BrowserFragment : Fragment() {
         overflowButton = view.findViewById(R.id.overflowButton)
         pageProgress = view.findViewById(R.id.pageProgress)
         webView = view.findViewById(R.id.webView)
+        navLoadingVeil = view.findViewById(R.id.navLoadingVeil)
         speedDialContainer = view.findViewById(R.id.speedDialContainer)
         speedDialGrid = view.findViewById(R.id.speedDialGrid)
         addLinkFab = view.findViewById(R.id.addLinkFab)
@@ -217,6 +229,7 @@ class BrowserFragment : Fragment() {
 
             override fun onPageFinished(view: WebView, url: String?) {
                 pageProgress.visibility = View.GONE
+                hideNavLoadingVeil()
                 val title = view.title?.takeIf { t -> t.isNotBlank() } ?: url.orEmpty()
                 tabs.getOrNull(currentTabIndex)?.let {
                     it.url = url
@@ -226,6 +239,18 @@ class BrowserFragment : Fragment() {
                     HistoryRepository.record(url, title)
                 }
                 url?.let { checkPageForLinks(it) }
+            }
+
+            // Safety net: if a navigation fails outright (no connectivity, bad
+            // host, etc.) onPageFinished still fires afterwards for the failed
+            // load in practice, but hiding here too means the veil can never
+            // get stuck up on an error path.
+            override fun onReceivedError(
+                view: WebView,
+                request: android.webkit.WebResourceRequest,
+                error: android.webkit.WebResourceError
+            ) {
+                if (request.isForMainFrame) hideNavLoadingVeil()
             }
 
             /**
@@ -303,6 +328,7 @@ class BrowserFragment : Fragment() {
     fun onBackPressed(): Boolean {
         if (webView.visibility == View.VISIBLE) {
             if (webView.canGoBack()) {
+                showNavLoadingVeil()
                 webView.goBack()
             } else {
                 showSpeedDial()
@@ -398,6 +424,7 @@ class BrowserFragment : Fragment() {
         val url = normalizeToUrl(input)
         hideSuggestions()
         showWebView()
+        showNavLoadingVeil()
         webView.loadUrl(url)
         // Drop keyboard focus so the address bar doesn't stay expanded.
         urlInput.clearFocus()
@@ -437,11 +464,28 @@ class BrowserFragment : Fragment() {
         urlInput.setText("")
         hideSuggestions()
         clearDetectedLink()
+        hideNavLoadingVeil()
     }
 
     private fun showWebView() {
         speedDialContainer.visibility = View.GONE
         webView.visibility = View.VISIBLE
+    }
+
+    /**
+     * Covers the WebView the instant we're about to navigate it somewhere new
+     * (typed URL, back/forward, tab switch/restore) so the outgoing page's
+     * pixels are never visible while the new one loads. Paired with
+     * hideNavLoadingVeil(), called once the new page has actually finished
+     * (or failed) loading.
+     */
+    private fun showNavLoadingVeil() {
+        navLoadingVeil.visibility = View.VISIBLE
+        navLoadingVeil.bringToFront()
+    }
+
+    private fun hideNavLoadingVeil() {
+        navLoadingVeil.visibility = View.GONE
     }
 
     private fun showAddBookmarkDialog(prefillUrl: String?) {
@@ -508,14 +552,44 @@ class BrowserFragment : Fragment() {
     }
 
     private fun addNewTab() {
+        saveCurrentTabState()
         tabs.add(BrowserTab(id = nextTabId++))
         currentTabIndex = tabs.lastIndex
         showSpeedDial()
         updateTabsCount()
     }
 
+    /**
+     * Snapshots the currently active tab's WebView history/scroll state into
+     * its BrowserTab before we navigate the shared WebView away from it.
+     * Without this, switching tabs would either reload from network (slow)
+     * or, worse, leave the outgoing tab's pages sitting in the *incoming*
+     * tab's back/forward stack.
+     */
+    private fun saveCurrentTabState() {
+        val tab = tabs.getOrNull(currentTabIndex) ?: return
+        if (webView.visibility != View.VISIBLE || tab.url.isNullOrBlank()) return
+        val bundle = android.os.Bundle()
+        if (webView.saveState(bundle) != null) {
+            tab.webViewState = bundle
+        }
+    }
+
+    /** Switch the shared WebView to show [index], saving the outgoing tab's state first. */
     private fun switchToTab(index: Int) {
-        if (index !in tabs.indices) return
+        if (index !in tabs.indices || index == currentTabIndex) return
+        saveCurrentTabState()
+        activateTab(index)
+    }
+
+    /**
+     * Actually points the shared WebView at [index]'s content, WITHOUT saving
+     * whatever the WebView is currently showing. Used by switchToTab (after it
+     * has already saved the outgoing tab) and by closeTab (where the outgoing
+     * content belongs to the tab that just got closed and should be discarded,
+     * not saved into the tab that's about to become current).
+     */
+    private fun activateTab(index: Int) {
         currentTabIndex = index
         val tab = tabs[index]
         val url = tab.url
@@ -523,14 +597,23 @@ class BrowserFragment : Fragment() {
             showSpeedDial()
         } else {
             showWebView()
-            webView.loadUrl(url)
+            showNavLoadingVeil()
+            val state = tab.webViewState
+            if (state != null) {
+                // Restores from WebView's own cache/history -- no network
+                // round-trip, so the switch is instant instead of laggy.
+                webView.restoreState(state)
+            } else {
+                webView.loadUrl(url)
+            }
         }
     }
 
     /**
      * Closes a tab. Never drops below one tab -- closing the last remaining
      * one just resets it to a fresh "New tab" instead of removing it, same
-     * as closing the last tab in a normal browser.
+     * as closing the last tab in a normal browser (a new tab effectively
+     * "opens" automatically since the speed dial is shown right away).
      */
     private fun closeTab(index: Int) {
         if (index !in tabs.indices) return
@@ -543,10 +626,7 @@ class BrowserFragment : Fragment() {
         val closingCurrent = index == currentTabIndex
         tabs.removeAt(index)
         when {
-            closingCurrent -> {
-                currentTabIndex = index.coerceAtMost(tabs.size - 1)
-                switchToTab(currentTabIndex)
-            }
+            closingCurrent -> activateTab(index.coerceAtMost(tabs.size - 1))
             index < currentTabIndex -> currentTabIndex--
         }
         updateTabsCount()
@@ -585,11 +665,9 @@ class BrowserFragment : Fragment() {
                     setImageResource(R.drawable.ic_close)
                     background = null
                     setPadding(16, 16, 16, 16)
-                    // Only offer closing when more than one tab is open --
-                    // closing the last one is handled by the "New tab"
-                    // button instead, same as most browsers.
-                    isEnabled = tabs.size > 1
-                    alpha = if (tabs.size > 1) 1f else 0.3f
+                    // Every tab is closable, including the last one -- closeTab()
+                    // resets it to a fresh "New tab" (speed dial) in that case,
+                    // so a new tab effectively opens automatically.
                     setOnClickListener {
                         closeTab(index)
                         refreshRows()

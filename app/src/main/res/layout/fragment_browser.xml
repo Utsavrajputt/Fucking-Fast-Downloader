@@ -170,6 +170,28 @@
                     android:layout_height="wrap_content"
                     android:maxHeight="280dp" />
             </com.google.android.material.card.MaterialCardView>
+
+            <!-- Navigation loading veil: shown the instant a new page starts
+                 loading (new URL, back/forward, tab switch) and hidden once
+                 it finishes. Sits above the WebView so the *previous* page's
+                 pixels are never visible mid-navigation -- without this,
+                 WebView keeps rendering the old page until the new one has
+                 painted, which reads as "purana website dikh raha hai". -->
+            <FrameLayout
+                android:id="@+id/navLoadingVeil"
+                android:layout_width="match_parent"
+                android:layout_height="match_parent"
+                android:background="@color/ff_bg"
+                android:clickable="true"
+                android:focusable="true"
+                android:visibility="gone">
+
+                <ProgressBar
+                    android:layout_width="wrap_content"
+                    android:layout_height="wrap_content"
+                    android:layout_gravity="center"
+                    android:indeterminateTint="@color/ff_accent" />
+            </FrameLayout>
         </FrameLayout>
     </LinearLayout>
 
