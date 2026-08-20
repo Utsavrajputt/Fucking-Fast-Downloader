@@ -174,7 +174,7 @@
             <!-- Navigation loading veil: shown the instant a new page starts
                  loading (new URL, back/forward, tab switch) and hidden once
                  it finishes. Sits above the WebView so the *previous* page's
-                 pixels are never visible mid-navigation -- without this,
+                 pixels are never visible mid-navigation, without this,
                  WebView keeps rendering the old page until the new one has
                  painted, which reads as "purana website dikh raha hai". -->
             <FrameLayout
