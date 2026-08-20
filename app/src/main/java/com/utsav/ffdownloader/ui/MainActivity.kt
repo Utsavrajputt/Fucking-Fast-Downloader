@@ -170,6 +170,14 @@ class MainActivity : AppCompatActivity(), HomeFragment.Callbacks, DownloadsFragm
 
         bottomNav = findViewById(R.id.bottomNav)
         bottomNav.setOnItemSelectedListener { item ->
+            // History is layered on top via addToBackStack (see openHistoryScreen)
+            // -- showFragment() below only shows/hides the three base tab
+            // fragments underneath it, so without popping first, switching
+            // tabs (by tap OR the swipe gesture) left History visibly stuck
+            // on top no matter which tab got selected underneath.
+            if (supportFragmentManager.backStackEntryCount > 0) {
+                supportFragmentManager.popBackStack(null, androidx.fragment.app.FragmentManager.POP_BACK_STACK_INCLUSIVE)
+            }
             when (item.itemId) {
                 R.id.nav_home -> {
                     showFragment(TAG_HOME)
