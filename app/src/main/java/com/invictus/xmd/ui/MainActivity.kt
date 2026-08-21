@@ -419,6 +419,19 @@ class MainActivity : AppCompatActivity(), HomeFragment.Callbacks, DownloadsFragm
         showDownloadStartedSnackbar()
     }
 
+    override fun triggerDownloadTorrentFile(uri: Uri, displayName: String?) {
+        val link = uri.toString()
+        QueueRepository.setLinks(listOf(link))
+        val item = QueueRepository.current().firstOrNull { it.sourceUrl == link }
+        if (item != null) {
+            QueueRepository.update(item.id) {
+                it.copy(directUrl = link, status = ItemStatus.READY, fileName = displayName ?: it.fileName)
+            }
+        }
+        DownloadService.start(this)
+        showDownloadStartedSnackbar()
+    }
+
     /**
      * Downloads kick off in the background with no screen change, so without
      * this the user has no confirmation anything happened. Mirrors the

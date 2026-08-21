@@ -4,6 +4,7 @@ import android.content.ClipboardManager
 import android.content.Intent
 import android.net.Uri
 import android.os.Bundle
+import android.provider.OpenableColumns
 import android.text.Editable
 import android.text.TextWatcher
 import android.view.LayoutInflater
@@ -28,6 +29,7 @@ class HomeFragment : Fragment() {
         fun triggerPrepare(lines: List<String>)
         fun triggerDownloadReady()
         fun triggerDownloadDirect(lines: List<String>)
+        fun triggerDownloadTorrentFile(uri: Uri, displayName: String?)
     }
 
     // ── State ─────────────────────────────────────────────────────────────
@@ -67,11 +69,14 @@ class HomeFragment : Fragment() {
         view.findViewById<View>(R.id.clipboardAddButton).setOnClickListener { onClipboardAddClicked() }
         view.findViewById<View>(R.id.clipboardDismissButton).setOnClickListener { dismissClipboardBanner() }
         view.findViewById<View>(R.id.pickTorrentFileButton).setOnClickListener {
-            // "application/x-bittorrent" is the correct mime type for .torrent
-            // files, but plenty of file managers/devices mis-tag or don't
-            // recognize it -- fall back to "*/*" so the picker still opens
-            // and shows every file rather than coming back empty.
-            pickTorrentFileLauncher.launch(arrayOf("application/x-bittorrent", "*/*"))
+            // application/x-bittorrent is the correct mime type for .torrent
+            // files, but plenty of file managers/devices mis-tag them as
+            // generic octet-stream -- include both so real torrent files
+            // aren't hidden by the picker, without falling all the way back
+            // to "*/*" (which would show every file on the device).
+            pickTorrentFileLauncher.launch(
+                arrayOf("application/x-bittorrent", "application/octet-stream")
+            )
         }
 
         linksInput.addTextChangedListener(object : TextWatcher {
@@ -211,17 +216,35 @@ class HomeFragment : Fragment() {
 
     /**
      * The picked file is already a complete .torrent -- nothing to resolve --
-     * so this goes straight through the same direct-download fast path as a
-     * pasted magnet link or remote .torrent URL, just with the content://
-     * URI as the "link".
+     * so this goes straight to downloading, same as a pasted magnet link or
+     * remote .torrent URL. SAF only hands back a content:// URI with no
+     * guaranteed filename in it, so the real display name is looked up here
+     * (via OpenableColumns) and passed along -- otherwise the Downloads list
+     * would show the raw content:// URI as the item's name until it finished.
      */
     private fun onTorrentFilePicked(uri: Uri) {
+        val displayName = queryDisplayName(uri)
+        if (displayName != null && !displayName.endsWith(".torrent", ignoreCase = true)) {
+            Toast.makeText(requireContext(), "Please select a .torrent file", Toast.LENGTH_SHORT).show()
+            return
+        }
         runCatching {
             requireContext().contentResolver.takePersistableUriPermission(
                 uri, Intent.FLAG_GRANT_READ_URI_PERMISSION
             )
         }
-        (activity as? Callbacks)?.triggerDownloadDirect(listOf(uri.toString()))
+        (activity as? Callbacks)?.triggerDownloadTorrentFile(uri, displayName)
+    }
+
+    private fun queryDisplayName(uri: Uri): String? {
+        return runCatching {
+            requireContext().contentResolver.query(
+                uri, arrayOf(OpenableColumns.DISPLAY_NAME), null, null, null
+            )?.use { cursor ->
+                val nameIndex = cursor.getColumnIndex(OpenableColumns.DISPLAY_NAME)
+                if (nameIndex >= 0 && cursor.moveToFirst()) cursor.getString(nameIndex) else null
+            }
+        }.getOrNull()
     }
 
     // ── Helpers ───────────────────────────────────────────────────────────
