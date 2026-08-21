@@ -306,6 +306,45 @@ class MainActivity : AppCompatActivity(), HomeFragment.Callbacks, DownloadsFragm
         checkStoragePermission()
         checkNotificationPermission()
         autoResumePendingDownloads()
+        handleIncomingIntent(intent)
+    }
+
+    // ── Incoming links (external download-manager / share target) ──────────
+    // Fires when: (a) a browser's download picker launches xmd for a VIEW
+    // intent on a http(s) link (see the manifest intent-filter), or (b) a
+    // link is Shared into xmd from a browser that doesn't have a
+    // download-manager chooser (Chrome, Samsung Internet, Edge, ...).
+    // singleTop means an already-running MainActivity gets onNewIntent
+    // instead of a fresh onCreate, so both entry points are covered here.
+    override fun onNewIntent(intent: Intent) {
+        super.onNewIntent(intent)
+        setIntent(intent)
+        handleIncomingIntent(intent)
+    }
+
+    private fun handleIncomingIntent(intent: Intent) {
+        val url = when (intent.action) {
+            Intent.ACTION_VIEW -> intent.data?.toString()
+            Intent.ACTION_SEND -> intent.getStringExtra(Intent.EXTRA_TEXT)
+                ?.let { text -> Regex("""https?://\S+""").find(text)?.value }
+            else -> null
+        }?.trim()
+
+        if (url.isNullOrEmpty() || !(url.startsWith("http://") || url.startsWith("https://"))) return
+
+        // Consume it so rotation / re-entering onResume doesn't re-queue the
+        // same link a second time.
+        intent.action = null
+        intent.data = null
+
+        bottomNav.selectedItemId = R.id.nav_home
+
+        val needsPrepare = LinkParser.isShareLink(url) || LinkParser.isFitgirlPage(url)
+        if (needsPrepare) {
+            triggerPrepare(listOf(url))
+        } else {
+            triggerDownloadDirect(listOf(url))
+        }
     }
 
     /**
