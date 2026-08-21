@@ -141,10 +141,12 @@ class DownloadService : LifecycleService() {
             ACTION_PAUSE_ITEM -> intent.getStringExtra(EXTRA_ITEM_ID)?.let { id ->
                 engines[id]?.pause()
                 QueueRepository.update(id) { it.copy(status = ItemStatus.PAUSED) }
+                updateNotification()
             }
             ACTION_RESUME_ITEM -> intent.getStringExtra(EXTRA_ITEM_ID)?.let { id ->
                 engines[id]?.resume()
                 QueueRepository.update(id) { it.copy(status = ItemStatus.DOWNLOADING) }
+                updateNotification()
             }
             ACTION_CANCEL_ITEM -> intent.getStringExtra(EXTRA_ITEM_ID)?.let { id ->
                 engines[id]?.cancel()
@@ -156,12 +158,14 @@ class DownloadService : LifecycleService() {
                 if (current?.status == ItemStatus.RETRYING) {
                     QueueRepository.update(id) { it.copy(status = ItemStatus.FAILED, error = "Cancelled") }
                 }
+                updateNotification()
             }
             ACTION_CANCEL_ALL -> {
                 engines.values.forEach { it.cancel() }
                 QueueRepository.current().filter { it.status == ItemStatus.RETRYING }.forEach { item ->
                     QueueRepository.update(item.id) { it.copy(status = ItemStatus.FAILED, error = "Cancelled") }
                 }
+                updateNotification()
             }
         }
         return START_NOT_STICKY
@@ -347,7 +351,17 @@ class DownloadService : LifecycleService() {
     }
 
     private fun buildNotification(): Notification {
-        val active = QueueRepository.current().filter { it.status == ItemStatus.DOWNLOADING }
+        val queue = QueueRepository.current()
+        val active = queue.filter { it.status == ItemStatus.DOWNLOADING }
+        // Paused/retrying items still need to be reflected in the notification --
+        // otherwise pausing the only active download empties `active` and the
+        // notification falls back to a permanent "Preparing…" + indeterminate bar.
+        val relevant = queue.filter {
+            it.status == ItemStatus.DOWNLOADING || it.status == ItemStatus.PAUSED ||
+                it.status == ItemStatus.RETRYING
+        }
+        val resolving = queue.any { it.status == ItemStatus.RESOLVING }
+
         val totalDone = active.sumOf { it.bytesDone }
         val totalSize = active.sumOf { it.bytesTotal }
         val totalSpeed = active.sumOf { it.speedBps }
@@ -355,19 +369,42 @@ class DownloadService : LifecycleService() {
 
         val title: String
         val text: String
+        // Progress bar state: only truly indeterminate while resolving with nothing
+        // else going on. A paused item keeps its last known (determinate) percent.
+        var indeterminate = false
+        var barPercent = percent
+
         when {
-            active.isEmpty() -> {
+            relevant.isEmpty() && resolving -> {
                 title = getString(R.string.app_name)
                 text = "Preparing…"
+                indeterminate = true
             }
-            active.size == 1 -> {
-                val item = active.first()
+            relevant.isEmpty() -> {
+                title = getString(R.string.app_name)
+                text = "Idle"
+            }
+            relevant.size == 1 -> {
+                val item = relevant.first()
                 title = item.fileName ?: item.sourceUrl
-                text = buildDetailLine(item.bytesDone, item.bytesTotal, item.speedBps)
+                text = when (item.status) {
+                    ItemStatus.PAUSED -> "⏸  Paused — " + buildDetailLine(item.bytesDone, item.bytesTotal, 0.0)
+                    ItemStatus.RETRYING -> "🔁  ${item.error ?: "Retrying…"}"
+                    else -> buildDetailLine(item.bytesDone, item.bytesTotal, item.speedBps)
+                }
+                barPercent = if (item.bytesTotal > 0) ((item.bytesDone * 100) / item.bytesTotal).toInt() else 0
             }
             else -> {
-                title = "${active.size} files downloading"
-                text = buildDetailLine(totalDone, totalSize, totalSpeed)
+                val pausedCount = relevant.count { it.status == ItemStatus.PAUSED }
+                title = "${relevant.size} files" +
+                    if (active.isNotEmpty()) " downloading" else " in queue"
+                text = buildString {
+                    append(buildDetailLine(totalDone, totalSize, totalSpeed))
+                    if (pausedCount > 0) append("  •  $pausedCount paused")
+                }
+                val relevantTotal = relevant.sumOf { it.bytesTotal }
+                val relevantDone = relevant.sumOf { it.bytesDone }
+                barPercent = if (relevantTotal > 0) ((relevantDone * 100) / relevantTotal).toInt() else 0
             }
         }
 
@@ -376,31 +413,44 @@ class DownloadService : LifecycleService() {
             PendingIntent.FLAG_IMMUTABLE or PendingIntent.FLAG_UPDATE_CURRENT
         )
 
+        val showBar = indeterminate || relevant.any { it.bytesTotal > 0 }
         val builder = NotificationCompat.Builder(this, FfApp.DOWNLOAD_CHANNEL_ID)
             .setSmallIcon(R.drawable.ic_download)
             .setContentTitle(title)
             .setContentText(text)
-            .setSubText(if (totalSize > 0) "$percent%" else null)
+            .setSubText(if (!indeterminate && showBar) "$barPercent%" else null)
             .setStyle(NotificationCompat.BigTextStyle().bigText(text))
             .setOngoing(true)
             .setOnlyAlertOnce(true)
-            .setProgress(100, percent, active.isEmpty() && QueueRepository.current().any { it.status == ItemStatus.RESOLVING })
+            .setProgress(100, barPercent, indeterminate)
             .setContentIntent(openIntent)
 
-        // Per-item pause + a single cancel-all action -- only shown while something
-        // is actually downloading (Via-style controls right in the notification).
-        if (active.size == 1) {
-            val item = active.first()
-            val pauseIntent = PendingIntent.getService(
-                this, 1,
-                Intent(this, DownloadService::class.java)
-                    .setAction(ACTION_PAUSE_ITEM)
-                    .putExtra(EXTRA_ITEM_ID, item.id),
-                PendingIntent.FLAG_IMMUTABLE or PendingIntent.FLAG_UPDATE_CURRENT
-            )
-            builder.addAction(0, getString(R.string.action_pause), pauseIntent)
+        // Per-item pause/resume + a single cancel-all action -- shown whenever
+        // there's a live or paused item to act on (Via-style controls right in
+        // the notification).
+        if (relevant.size == 1) {
+            val item = relevant.first()
+            if (item.status == ItemStatus.PAUSED) {
+                val resumeIntent = PendingIntent.getService(
+                    this, 1,
+                    Intent(this, DownloadService::class.java)
+                        .setAction(ACTION_RESUME_ITEM)
+                        .putExtra(EXTRA_ITEM_ID, item.id),
+                    PendingIntent.FLAG_IMMUTABLE or PendingIntent.FLAG_UPDATE_CURRENT
+                )
+                builder.addAction(0, getString(R.string.action_resume), resumeIntent)
+            } else if (item.status == ItemStatus.DOWNLOADING) {
+                val pauseIntent = PendingIntent.getService(
+                    this, 1,
+                    Intent(this, DownloadService::class.java)
+                        .setAction(ACTION_PAUSE_ITEM)
+                        .putExtra(EXTRA_ITEM_ID, item.id),
+                    PendingIntent.FLAG_IMMUTABLE or PendingIntent.FLAG_UPDATE_CURRENT
+                )
+                builder.addAction(0, getString(R.string.action_pause), pauseIntent)
+            }
         }
-        if (active.isNotEmpty()) {
+        if (relevant.isNotEmpty()) {
             val cancelIntent = PendingIntent.getService(
                 this, 2,
                 Intent(this, DownloadService::class.java).setAction(ACTION_CANCEL_ALL),

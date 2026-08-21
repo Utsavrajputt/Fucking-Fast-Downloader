@@ -41,6 +41,18 @@ class QueueAdapter(
         return VH(view)
     }
 
+    override fun onBindViewHolder(holder: VH, position: Int, payloads: MutableList<Any>) {
+        // Progress-only tick (bytes/speed changed but status/name/etc didn't) --
+        // update just the live text/progress views and skip the full rebind so
+        // RecyclerView's default change-animation (fade out/in) doesn't fire and
+        // flicker the whole row on every update.
+        if (payloads.isNotEmpty() && payloads.all { it == PAYLOAD_PROGRESS }) {
+            bindProgressOnly(holder, getItem(position))
+            return
+        }
+        super.onBindViewHolder(holder, position, payloads)
+    }
+
     override fun onBindViewHolder(holder: VH, position: Int) {
         val item = getItem(position)
         val context = holder.itemView.context
@@ -151,6 +163,33 @@ class QueueAdapter(
         holder.clear.setOnClickListener { onClear(item) }
     }
 
+    /** Updates only what a progress tick can change -- status text, size line,
+     *  progress bar value, speed/ETA line -- with no visibility/animator churn
+     *  on the rest of the row. */
+    private fun bindProgressOnly(holder: VH, item: QueueItem) {
+        if (item.status == ItemStatus.DOWNLOADING) {
+            val pct = if (item.bytesTotal > 0) (item.bytesDone * 100 / item.bytesTotal) else 0
+            holder.status.text = "⬇  ${if (item.bytesTotal > 0) "$pct%" else "Downloading…"}"
+        }
+
+        if (item.bytesTotal > 0) {
+            holder.sizeText.text = "${formatBytes(item.bytesDone)} / ${formatBytes(item.bytesTotal)}"
+        } else if (item.bytesDone > 0) {
+            holder.sizeText.text = formatBytes(item.bytesDone)
+        }
+
+        if (item.status == ItemStatus.DOWNLOADING && item.bytesTotal > 0) {
+            holder.progress.progress = ((item.bytesDone * 100) / item.bytesTotal).toInt()
+        }
+
+        if (item.status == ItemStatus.DOWNLOADING && item.speedBps > 0) {
+            holder.speedEta.text = buildSpeedEtaText(item)
+            holder.speedEta.visibility = View.VISIBLE
+        } else {
+            holder.speedEta.visibility = View.GONE
+        }
+    }
+
     // ── Helpers ───────────────────────────────────────────────────────────
 
     private fun colorForStatus(status: ItemStatus): Int = when (status) {
@@ -195,9 +234,21 @@ class QueueAdapter(
     }
 
     companion object {
+        /** Payload marker: only progress-related fields changed between two binds. */
+        private const val PAYLOAD_PROGRESS = "payload_progress"
+
         private val DIFF = object : DiffUtil.ItemCallback<QueueItem>() {
             override fun areItemsTheSame(a: QueueItem, b: QueueItem) = a.id == b.id
             override fun areContentsTheSame(a: QueueItem, b: QueueItem) = a == b
+
+            override fun getChangePayload(a: QueueItem, b: QueueItem): Any? {
+                // If everything except bytesDone/bytesTotal/speedBps is identical,
+                // this is a plain progress tick -- tell the adapter to do a
+                // partial (non-animated) rebind instead of a full one.
+                val progressOnly = a.copy(bytesDone = 0L, bytesTotal = 0L, speedBps = 0.0) ==
+                    b.copy(bytesDone = 0L, bytesTotal = 0L, speedBps = 0.0)
+                return if (progressOnly) PAYLOAD_PROGRESS else null
+            }
         }
     }
 }
