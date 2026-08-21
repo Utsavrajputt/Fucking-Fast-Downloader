@@ -91,7 +91,7 @@ class TorrentEngine(
 
         log("Looking for peers to fetch torrent metadata…")
         checkpoint()
-        val data = TorrentSession.instance.fetchMagnet(magnetUri, METADATA_TIMEOUT_SECONDS)
+        val data = TorrentSession.instance.fetchMagnet(magnetUri, METADATA_TIMEOUT_SECONDS, saveDir)
             ?: throw RuntimeException(
                 "Couldn't find this torrent's metadata (no peers/seeds responded within " +
                     "${METADATA_TIMEOUT_SECONDS}s). The magnet link may be dead."
