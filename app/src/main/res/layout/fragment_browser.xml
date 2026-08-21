@@ -39,24 +39,51 @@
                 android:layout_marginStart="4dp"
                 app:cardBackgroundColor="@color/ff_surface_2"
                 app:cardCornerRadius="20dp"
-                app:cardElevation="0dp">
+                app:cardElevation="0dp"
+                app:strokeWidth="0dp">
 
-                <EditText
-                    android:id="@+id/urlInput"
+                <LinearLayout
                     android:layout_width="match_parent"
                     android:layout_height="40dp"
-                    android:background="@null"
-                    android:paddingHorizontal="14dp"
-                    android:hint="@string/hint_url"
-                    android:textColorHint="@color/ff_muted"
-                    android:textColor="@color/ff_text"
-                    android:textSize="14sp"
-                    android:singleLine="true"
-                    android:imeOptions="actionGo"
-                    android:inputType="textUri"
-                    android:selectAllOnFocus="true" />
+                    android:orientation="horizontal"
+                    android:gravity="center_vertical">
+
+                    <!-- Security indicator: swaps between locked/unlocked padlock
+                         based on the current page's scheme; hidden on the speed
+                         dial where there's no page to describe. -->
+                    <ImageView
+                        android:id="@+id/siteSecurityIcon"
+                        android:layout_width="16dp"
+                        android:layout_height="16dp"
+                        android:layout_marginStart="12dp"
+                        android:src="@drawable/ic_lock"
+                        android:tint="@color/ff_muted"
+                        android:visibility="gone"
+                        android:contentDescription="@null" />
+
+                    <EditText
+                        android:id="@+id/urlInput"
+                        android:layout_width="0dp"
+                        android:layout_height="40dp"
+                        android:layout_weight="1"
+                        android:background="@null"
+                        android:paddingStart="14dp"
+                        android:paddingEnd="14dp"
+                        android:hint="@string/hint_url"
+                        android:textColorHint="@color/ff_muted"
+                        android:textColor="@color/ff_text"
+                        android:textSize="14sp"
+                        android:singleLine="true"
+                        android:ellipsize="end"
+                        android:imeOptions="actionGo"
+                        android:inputType="textUri"
+                        android:selectAllOnFocus="true" />
+                </LinearLayout>
             </com.google.android.material.card.MaterialCardView>
 
+            <!-- Reload/Stop toggle: same button swaps its icon+action between
+                 reload (idle) and stop (page actively loading), Chrome-style,
+                 instead of a reload button that does nothing useful mid-load. -->
             <ImageButton
                 android:id="@+id/reloadButton"
                 android:layout_width="40dp"
@@ -118,8 +145,13 @@
             android:layout_height="0dp"
             android:layout_weight="1">
 
-            <WebView
-                android:id="@+id/webView"
+            <!-- Hosts every live tab's own WebView instance (pooled, capped;
+                 see BrowserFragment). Each tab's WebView is added here and
+                 shown/hidden (with a crossfade) on switch instead of a single
+                 shared WebView being re-pointed, so switching tabs is an
+                 instant view swap rather than a reload/restoreState. -->
+            <FrameLayout
+                android:id="@+id/webViewContainer"
                 android:layout_width="match_parent"
                 android:layout_height="match_parent" />
 

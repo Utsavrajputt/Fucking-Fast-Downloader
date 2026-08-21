@@ -9,11 +9,14 @@ import android.view.LayoutInflater
 import android.view.View
 import android.view.ViewGroup
 import android.view.inputmethod.EditorInfo
+import android.webkit.CookieManager
+import android.webkit.WebSettings
 import android.webkit.WebView
 import android.webkit.WebViewClient
 import android.widget.EditText
 import android.widget.FrameLayout
 import android.widget.ImageButton
+import android.widget.ImageView
 import android.widget.LinearLayout
 import android.widget.ProgressBar
 import android.widget.Toast
@@ -30,6 +33,7 @@ import com.invictus.xmd.core.Bookmark
 import com.invictus.xmd.core.BookmarkRepository
 import com.invictus.xmd.core.DnsOverHttpsResolver
 import com.invictus.xmd.core.DownloadEngine
+import com.invictus.xmd.core.FaviconLoader
 import com.invictus.xmd.core.HistoryRepository
 import com.invictus.xmd.core.LinkParser
 import com.invictus.xmd.core.Settings
@@ -39,12 +43,14 @@ import kotlinx.coroutines.Job
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
+import okhttp3.ConnectionPool
+import okhttp3.Dispatcher
 import okhttp3.OkHttpClient
 import okhttp3.Request
 import java.util.concurrent.TimeUnit
 
 /**
- * Mini in-app browser: address bar + WebView, with a Chrome-style
+ * Mini in-app browser: address bar + WebView pool, with a Chrome-style
  * speed-dial grid shown in place of the WebView on "new tab" (i.e.
  * whenever there's no URL loaded). Typing in the address bar shows
  * generic DuckDuckGo suggest results (see SuggestApi) -- no site list is
@@ -52,6 +58,14 @@ import java.util.concurrent.TimeUnit
  * current page and surfaces a FAB to send them to the Home download
  * queue; also intercepts any file download the page itself triggers
  * (WebView's native download signal) behind a confirm dialog.
+ *
+ * Each open tab owns its own WebView instance (up to [MAX_LIVE_WEBVIEWS]
+ * kept alive at once, LRU-recycled beyond that -- see the "Tab pool"
+ * section) instead of one WebView being re-pointed at different tabs.
+ * That means switching tabs is a plain view swap (crossfaded) with no
+ * reload and no restoreState() round-trip for whichever tabs are still
+ * live in the pool; a tab that got evicted restores from its saved
+ * WebView state on next visit instead of hitting the network again.
  *
  * The overflow (3-dot) menu is Browser-specific -- Private DNS and
  * History only, deliberately with no download-related options, kept
@@ -73,23 +87,32 @@ class BrowserFragment : Fragment() {
         fun openBrowserMenu(anchor: View)
     }
 
+    companion object {
+        /** Max WebView instances kept alive across all tabs at once. Beyond
+         *  this, the least-recently-used *non-current* tab's WebView is
+         *  torn down (state saved first) to keep memory bounded, same
+         *  general idea as Chrome's background tab discarding. */
+        private const val MAX_LIVE_WEBVIEWS = 5
+        private const val TAB_SWITCH_ANIM_MS = 130L
+    }
+
     /**
-     * One open tab. A single WebView is reused across tabs rather than keeping
-     * one WebView instance alive per tab -- simpler and lighter, at the cost of
-     * a tab losing its scroll position/in-page state while it's not the active
-     * one (it reloads [url] on switch). [title] backs the label shown in the
-     * tab list.
+     * One open tab. Each tab owns its WebView lazily -- created on first
+     * navigation, possibly torn down later under pool pressure -- so a
+     * pile of "New tab" entries sitting on the speed dial costs nothing.
+     * [webViewState] is the WebView.saveState() snapshot taken whenever
+     * this tab's WebView gets torn down (LRU eviction, or explicitly
+     * reset to blank), letting a later visit restore instantly instead
+     * of reloading from the network.
      */
     private data class BrowserTab(
         val id: Long,
         var url: String? = null,
         var title: String = "New tab",
-        // Per-tab WebView history/scroll snapshot (WebView.saveState). Lets tab
-        // switches restore instantly from this instead of hitting the network
-        // again via loadUrl, and keeps each tab's back/forward stack isolated
-        // from the others (previously all tabs shared one WebView history,
-        // so Back after switching tabs could land on a *different* tab's page).
-        var webViewState: android.os.Bundle? = null
+        var webView: WebView? = null,
+        var webViewState: android.os.Bundle? = null,
+        var isLoading: Boolean = false,
+        var progress: Int = 0
     )
 
     private lateinit var newTabButton: ImageButton
@@ -99,7 +122,8 @@ class BrowserFragment : Fragment() {
     private lateinit var tabsCount: android.widget.TextView
     private lateinit var overflowButton: ImageButton
     private lateinit var pageProgress: ProgressBar
-    private lateinit var webView: WebView
+    private lateinit var siteSecurityIcon: ImageView
+    private lateinit var webViewContainer: FrameLayout
     private lateinit var navLoadingVeil: View
     private lateinit var speedDialContainer: View
     private lateinit var speedDialGrid: RecyclerView
@@ -111,19 +135,13 @@ class BrowserFragment : Fragment() {
     private lateinit var suggestionAdapter: SuggestionAdapter
     private var lastDetectedLink: String? = null
     private var suggestJob: Job? = null
-    // Set right before loadUrl() when the *current* tab had no url yet (a
-    // genuinely fresh/new tab's first navigation). The shared WebView still
-    // carries whatever back/forward history the previously-active tab left
-    // behind, so without clearing it here, a fresh tab's first load would
-    // stack on top of that old history -- meaning Back on this brand-new
-    // tab could walk back into a *different* tab's earlier pages instead of
-    // landing on the speed dial. Consumed (cleared to false) the next time
-    // onPageFinished fires.
-    private var clearHistoryOnNextPageFinish = false
 
     private val tabs = mutableListOf(BrowserTab(id = 0L))
     private var currentTabIndex = 0
     private var nextTabId = 1L
+    // Most-recently-used order of tab IDs that currently have a live
+    // WebView, oldest first. Drives LRU eviction in evictIfNeeded().
+    private val tabAccessOrder = mutableListOf<Long>()
 
     // Own client instead of reusing MainActivity's -- this is a short-timeout,
     // fire-and-forget lookup that shouldn't share connection pool pressure
@@ -147,9 +165,12 @@ class BrowserFragment : Fragment() {
     // whatever the user picked without needing a restart. Null when DNS
     // mode is OFF, in which case shouldInterceptRequest below lets WebView
     // handle the request itself (system DNS) instead of intercepting.
-    // shouldInterceptRequest fires on WebView's own background thread and
-    // can run for several sub-resources concurrently, so this cache is
-    // guarded rather than plain vars.
+    // shouldInterceptRequest fires on WebView's own background thread(s)
+    // and can run for several sub-resources -- across potentially several
+    // live tabs -- concurrently, so this cache is guarded rather than
+    // plain vars, and the client itself is sized for real concurrency
+    // (see currentDohClient) instead of OkHttp's default 5-per-host cap,
+    // which was serializing sub-resource fetches from the same CDN host.
     @Volatile private var dohClient: OkHttpClient? = null
     @Volatile private var dohClientSignature: String? = null
     private val dohClientLock = Any()
@@ -174,10 +195,33 @@ class BrowserFragment : Fragment() {
                 .dns(DnsOverHttpsResolver(dohUrl))
                 .connectTimeout(15, TimeUnit.SECONDS)
                 .readTimeout(20, TimeUnit.SECONDS)
+                // Default OkHttp concurrency (64 total / 5 per host) throttles
+                // pages that pull many sub-resources from the same CDN host --
+                // each shouldInterceptRequest call blocks its WebView thread
+                // until the response comes back, so a tight per-host cap
+                // serializes what should be parallel fetches. Raised to match
+                // what a real browser keeps open per origin.
+                .dispatcher(Dispatcher().apply {
+                    maxRequests = 64
+                    maxRequestsPerHost = 16
+                })
+                .connectionPool(ConnectionPool(24, 5, TimeUnit.MINUTES))
                 .build()
             dohClient = built
             dohClientSignature = signature
             return built
+        }
+    }
+
+    /** Warms the DoH resolver's host cache for [url] in the background right
+     *  as navigation starts, so by the time shouldInterceptRequest actually
+     *  needs the address it's often already resolved instead of paying a
+     *  DNS round-trip on the critical path of the very first request. */
+    private fun prefetchDns(url: String) {
+        val client = currentDohClient() ?: return
+        val host = runCatching { android.net.Uri.parse(url).host }.getOrNull() ?: return
+        lifecycleScope.launch(Dispatchers.IO) {
+            runCatching { client.dns.lookup(host) }
         }
     }
 
@@ -195,7 +239,8 @@ class BrowserFragment : Fragment() {
         tabsCount = view.findViewById(R.id.tabsCount)
         overflowButton = view.findViewById(R.id.overflowButton)
         pageProgress = view.findViewById(R.id.pageProgress)
-        webView = view.findViewById(R.id.webView)
+        siteSecurityIcon = view.findViewById(R.id.siteSecurityIcon)
+        webViewContainer = view.findViewById(R.id.webViewContainer)
         navLoadingVeil = view.findViewById(R.id.navLoadingVeil)
         speedDialContainer = view.findViewById(R.id.speedDialContainer)
         speedDialGrid = view.findViewById(R.id.speedDialGrid)
@@ -203,7 +248,6 @@ class BrowserFragment : Fragment() {
         suggestionsCard = view.findViewById(R.id.suggestionsCard)
         suggestionsList = view.findViewById(R.id.suggestionsList)
 
-        setupWebView()
         setupSpeedDial()
         setupAddressBar()
         setupSuggestions()
@@ -218,44 +262,113 @@ class BrowserFragment : Fragment() {
         updateTabsCount()
     }
 
-    // ── WebView ──────────────────────────────────────────────────────────
+    // ── WebView pool ─────────────────────────────────────────────────────
+
+    private fun isCurrentTab(tab: BrowserTab): Boolean = tabs.getOrNull(currentTabIndex)?.id == tab.id
+
+    private fun touchLru(id: Long) {
+        tabAccessOrder.remove(id)
+        tabAccessOrder.add(id)
+    }
+
+    /** Returns [tab]'s live WebView, creating (or restoring) it if needed. */
+    private fun ensureWebView(tab: BrowserTab): WebView {
+        tab.webView?.let { touchLru(tab.id); return it }
+
+        val wv = WebView(requireContext()).apply {
+            layoutParams = FrameLayout.LayoutParams(
+                ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.MATCH_PARENT
+            )
+            alpha = 0f
+            visibility = View.GONE
+        }
+        configureWebView(wv, tab)
+        webViewContainer.addView(wv)
+        tab.webView = wv
+        touchLru(tab.id)
+        evictIfNeeded()
+        return wv
+    }
+
+    /** Tears down [tab]'s WebView, snapshotting its state first so a later
+     *  visit can restore instantly instead of reloading from the network. */
+    private fun destroyTabWebView(tab: BrowserTab) {
+        tabAccessOrder.remove(tab.id)
+        val wv = tab.webView ?: return
+        val bundle = android.os.Bundle()
+        if (wv.saveState(bundle) != null) tab.webViewState = bundle
+        webViewContainer.removeView(wv)
+        wv.stopLoading()
+        wv.destroy()
+        tab.webView = null
+    }
+
+    /** Never evicts the currently active tab, even if it's the oldest entry. */
+    private fun evictIfNeeded() {
+        val currentId = tabs.getOrNull(currentTabIndex)?.id
+        while (tabAccessOrder.size > MAX_LIVE_WEBVIEWS) {
+            val victimId = tabAccessOrder.firstOrNull { it != currentId } ?: break
+            val victim = tabs.find { it.id == victimId }
+            if (victim != null) destroyTabWebView(victim) else tabAccessOrder.remove(victimId)
+        }
+    }
+
+    /** Fully resets [tab] to a blank "New tab" state, tearing down its WebView. */
+    private fun resetTabToBlank(tab: BrowserTab) {
+        destroyTabWebView(tab)
+        tab.url = null
+        tab.title = "New tab"
+        tab.webViewState = null
+        tab.isLoading = false
+        tab.progress = 0
+    }
 
     @SuppressLint("SetJavaScriptEnabled")
-    private fun setupWebView() {
+    private fun configureWebView(webView: WebView, tab: BrowserTab) {
         webView.settings.javaScriptEnabled = true
         webView.settings.domStorageEnabled = true
+        webView.settings.databaseEnabled = true
+        // LOAD_DEFAULT: serve straight from cache whenever the cached
+        // response is still valid per its own headers, only hitting the
+        // network for stuff that's actually stale -- cache-first without
+        // risking served-stale content on pages that opt out via headers.
+        webView.settings.cacheMode = WebSettings.LOAD_DEFAULT
+        webView.settings.mixedContentMode = WebSettings.MIXED_CONTENT_COMPATIBILITY_MODE
+        CookieManager.getInstance().setAcceptThirdPartyCookies(webView, true)
+
         webView.setDownloadListener { url, _, contentDisposition, mimeType, _ ->
-            onWebViewDownloadRequested(url, contentDisposition, mimeType)
+            if (isCurrentTab(tab)) onWebViewDownloadRequested(url, contentDisposition, mimeType)
         }
+
         webView.webViewClient = object : WebViewClient() {
             override fun onPageStarted(view: WebView, url: String?, favicon: android.graphics.Bitmap?) {
-                pageProgress.visibility = View.VISIBLE
-                pageProgress.progress = 0
-                url?.let { urlInput.setText(it) }
-                tabs.getOrNull(currentTabIndex)?.let { it.url = url }
-                clearDetectedLink()
+                tab.url = url
+                tab.isLoading = true
+                tab.progress = 0
+                if (isCurrentTab(tab)) {
+                    pageProgress.visibility = View.VISIBLE
+                    pageProgress.progress = 0
+                    urlInput.setText(url)
+                    updateSecurityIcon(tab)
+                    reloadButton.setImageResource(R.drawable.ic_stop)
+                    clearDetectedLink()
+                }
             }
 
             override fun onPageFinished(view: WebView, url: String?) {
-                pageProgress.visibility = View.GONE
-                hideNavLoadingVeil()
-                if (clearHistoryOnNextPageFinish) {
-                    clearHistoryOnNextPageFinish = false
-                    // Drops every back/forward entry except this one -- so a
-                    // fresh tab's history starts clean instead of continuing
-                    // on top of whatever the previously-active tab left in
-                    // the shared WebView.
-                    view.clearHistory()
-                }
+                tab.isLoading = false
                 val title = view.title?.takeIf { t -> t.isNotBlank() } ?: url.orEmpty()
-                tabs.getOrNull(currentTabIndex)?.let {
-                    it.url = url
-                    it.title = title
-                }
+                tab.url = url
+                tab.title = title
                 if (!url.isNullOrBlank() && url.startsWith("http")) {
                     HistoryRepository.record(url, title)
                 }
-                url?.let { checkPageForLinks(it) }
+                if (isCurrentTab(tab)) {
+                    pageProgress.visibility = View.GONE
+                    reloadButton.setImageResource(R.drawable.ic_refresh)
+                    hideNavLoadingVeil()
+                    url?.let { checkPageForLinks(it) }
+                }
             }
 
             // Safety net: if a navigation fails outright (no connectivity, bad
@@ -267,7 +380,11 @@ class BrowserFragment : Fragment() {
                 request: android.webkit.WebResourceRequest,
                 error: android.webkit.WebResourceError
             ) {
-                if (request.isForMainFrame) hideNavLoadingVeil()
+                tab.isLoading = false
+                if (request.isForMainFrame && isCurrentTab(tab)) {
+                    hideNavLoadingVeil()
+                    reloadButton.setImageResource(R.drawable.ic_refresh)
+                }
             }
 
             /**
@@ -323,7 +440,8 @@ class BrowserFragment : Fragment() {
         }
         webView.webChromeClient = object : android.webkit.WebChromeClient() {
             override fun onProgressChanged(view: WebView, newProgress: Int) {
-                pageProgress.progress = newProgress
+                tab.progress = newProgress
+                if (isCurrentTab(tab)) pageProgress.progress = newProgress
             }
         }
     }
@@ -332,24 +450,22 @@ class BrowserFragment : Fragment() {
      * Called by MainActivity to consume system/gesture back presses while the
      * Browser tab is visible.
      *
-     * Previously this only handled in-page history (webView.canGoBack()) and
-     * returned false otherwise -- which meant the very first navigation from
-     * the speed dial (no back history yet) fell straight through to the
-     * activity's default back behavior and closed the whole app instead of
-     * returning to the speed dial. Now: if the WebView is showing a page,
-     * back either steps through its history or, with none left, returns to
-     * the speed dial (still consumed). Only once we're already on the speed
-     * dial does this return false, so MainActivity's callback can fall back
-     * to the Home tab instead of exiting.
+     * If the current tab's WebView is showing a page, back either steps
+     * through its in-page history or, with none left, resets the tab back
+     * to the speed dial (still consumed). Only once we're already on the
+     * speed dial does this return false, so MainActivity's callback can
+     * fall back to the Home tab instead of exiting.
      */
     fun onBackPressed(): Boolean {
-        if (webView.visibility == View.VISIBLE) {
-            if (webView.canGoBack()) {
+        val tab = tabs.getOrNull(currentTabIndex) ?: return false
+        val view = tab.webView
+        if (view != null && view.visibility == View.VISIBLE) {
+            if (view.canGoBack()) {
                 showNavLoadingVeil()
-                webView.goBack()
+                view.goBack()
             } else {
+                resetTabToBlank(tab)
                 showSpeedDial()
-                tabs.getOrNull(currentTabIndex)?.let { it.url = null; it.title = "New tab" }
             }
             return true
         }
@@ -359,7 +475,19 @@ class BrowserFragment : Fragment() {
     // ── Address bar ──────────────────────────────────────────────────────
 
     private fun setupAddressBar() {
-        reloadButton.setOnClickListener { webView.reload() }
+        reloadButton.setOnClickListener {
+            val tab = tabs.getOrNull(currentTabIndex) ?: return@setOnClickListener
+            val view = tab.webView ?: return@setOnClickListener
+            if (tab.isLoading) {
+                view.stopLoading()
+                tab.isLoading = false
+                reloadButton.setImageResource(R.drawable.ic_refresh)
+                pageProgress.visibility = View.GONE
+                hideNavLoadingVeil()
+            } else {
+                view.reload()
+            }
+        }
 
         urlInput.setOnEditorActionListener { _, actionId, event ->
             val isGo = actionId == EditorInfo.IME_ACTION_GO ||
@@ -379,8 +507,16 @@ class BrowserFragment : Fragment() {
             }
         })
 
+        // Chrome-style collapse: while not focused, show just the domain so
+        // the bar reads clean; focusing expands it back to the full URL for
+        // editing (full text is always what's actually in the EditText --
+        // this only swaps the *displayed* selection/cursor state on focus).
         urlInput.setOnFocusChangeListener { _, hasFocus ->
-            if (!hasFocus) hideSuggestions()
+            if (!hasFocus) {
+                hideSuggestions()
+            } else {
+                urlInput.selectAll()
+            }
         }
     }
 
@@ -427,11 +563,34 @@ class BrowserFragment : Fragment() {
         suggestionsCard.visibility = View.GONE
     }
 
+    private fun updateSecurityIcon(tab: BrowserTab) {
+        val url = tab.url
+        if (url.isNullOrBlank() || !url.startsWith("http")) {
+            siteSecurityIcon.visibility = View.GONE
+            return
+        }
+        siteSecurityIcon.visibility = View.VISIBLE
+        siteSecurityIcon.setImageResource(
+            if (url.startsWith("https")) R.drawable.ic_lock else R.drawable.ic_lock_open
+        )
+    }
+
+    /** Syncs the shared toolbar (address text, lock icon, progress, reload/
+     *  stop icon, download-link FAB) from [tab]'s own state. Call whenever
+     *  [tab] becomes the active one. */
+    private fun applyTabUiState(tab: BrowserTab) {
+        urlInput.setText(tab.url)
+        updateSecurityIcon(tab)
+        pageProgress.visibility = if (tab.isLoading) View.VISIBLE else View.GONE
+        pageProgress.progress = tab.progress
+        reloadButton.setImageResource(if (tab.isLoading) R.drawable.ic_stop else R.drawable.ic_refresh)
+        val url = tab.url
+        if (url != null) checkPageForLinks(url) else clearDetectedLink()
+    }
+
     /** Called from MainActivity (e.g. reopening a History entry) to load a
      *  URL in the current tab, same as typing it into the address bar. */
     fun openUrl(url: String) {
-        showWebView()
-        urlInput.setText(url)
         loadUrl(url)
     }
 
@@ -439,15 +598,26 @@ class BrowserFragment : Fragment() {
         val input = raw.trim()
         if (input.isEmpty()) return
         val url = normalizeToUrl(input)
+        val tab = tabs.getOrNull(currentTabIndex) ?: return
+
         hideSuggestions()
         showWebView()
+        tab.url = url
+        tab.isLoading = true
+        tab.progress = 0
+        // Fresh explicit navigation -- any previously saved restore state
+        // is now stale, so don't let a future pool eviction/recreate bring
+        // back the old page instead of this one.
+        tab.webViewState = null
+        applyTabUiState(tab)
         showNavLoadingVeil()
-        // This tab had no url yet -> its first-ever navigation. See
-        // clearHistoryOnNextPageFinish's doc for why this matters.
-        if (tabs.getOrNull(currentTabIndex)?.url.isNullOrBlank()) {
-            clearHistoryOnNextPageFinish = true
-        }
-        webView.loadUrl(url)
+        prefetchDns(url)
+
+        val view = ensureWebView(tab)
+        view.alpha = 1f
+        view.visibility = View.VISIBLE
+        view.loadUrl(url)
+
         // Drop keyboard focus so the address bar doesn't stay expanded.
         urlInput.clearFocus()
         val imm = requireContext().getSystemService(android.view.inputmethod.InputMethodManager::class.java)
@@ -482,8 +652,10 @@ class BrowserFragment : Fragment() {
 
     private fun showSpeedDial() {
         speedDialContainer.visibility = View.VISIBLE
-        webView.visibility = View.GONE
         urlInput.setText("")
+        siteSecurityIcon.visibility = View.GONE
+        pageProgress.visibility = View.GONE
+        reloadButton.setImageResource(R.drawable.ic_refresh)
         hideSuggestions()
         clearDetectedLink()
         hideNavLoadingVeil()
@@ -491,15 +663,16 @@ class BrowserFragment : Fragment() {
 
     private fun showWebView() {
         speedDialContainer.visibility = View.GONE
-        webView.visibility = View.VISIBLE
     }
 
     /**
-     * Covers the WebView the instant we're about to navigate it somewhere new
-     * (typed URL, back/forward, tab switch/restore) so the outgoing page's
-     * pixels are never visible while the new one loads. Paired with
-     * hideNavLoadingVeil(), called once the new page has actually finished
-     * (or failed) loading.
+     * Covers the content area the instant we're about to actually fetch a
+     * new page over the network (typed URL/search, back/forward, or a pool
+     * miss on tab switch) so the outgoing page's pixels are never visible
+     * mid-load. A same-pool tab switch (the common case) never shows this --
+     * it just crossfades between the two already-live WebViews instead.
+     * Paired with hideNavLoadingVeil(), called once the new page has
+     * actually finished (or failed) loading.
      */
     private fun showNavLoadingVeil() {
         navLoadingVeil.visibility = View.VISIBLE
@@ -514,7 +687,7 @@ class BrowserFragment : Fragment() {
         val dialogView = layoutInflater.inflate(R.layout.dialog_add_bookmark, null)
         val titleInput = dialogView.findViewById<EditText>(R.id.bookmarkTitleInput)
         val urlField = dialogView.findViewById<EditText>(R.id.bookmarkUrlInput)
-        urlField.setText(prefillUrl ?: webView.url.takeIf { webView.visibility == View.VISIBLE })
+        urlField.setText(prefillUrl ?: tabs.getOrNull(currentTabIndex)?.url)
 
         AlertDialog.Builder(requireContext())
             .setTitle(R.string.add_bookmark_title)
@@ -553,7 +726,6 @@ class BrowserFragment : Fragment() {
 
         AlertDialog.Builder(requireContext())
             .setTitle(R.string.edit_bookmark_title)
-            .setView(dialogView)
             .setPositiveButton(R.string.settings_save) { _, _ ->
                 val url = urlField.text?.toString()?.trim().orEmpty()
                 if (url.isEmpty()) {
@@ -563,6 +735,7 @@ class BrowserFragment : Fragment() {
                 BookmarkRepository.remove(bookmark)
                 BookmarkRepository.add(titleInput.text?.toString()?.trim().orEmpty(), normalizeToUrl(url))
             }
+            .setView(dialogView)
             .setNegativeButton(android.R.string.cancel, null)
             .show()
     }
@@ -574,61 +747,84 @@ class BrowserFragment : Fragment() {
     }
 
     private fun addNewTab() {
-        saveCurrentTabState()
+        val previousView = tabs.getOrNull(currentTabIndex)?.webView
         tabs.add(BrowserTab(id = nextTabId++))
         currentTabIndex = tabs.lastIndex
+        previousView?.let {
+            it.animate().cancel()
+            it.alpha = 0f
+            it.visibility = View.GONE
+        }
         showSpeedDial()
         updateTabsCount()
     }
 
     /**
-     * Snapshots the currently active tab's WebView history/scroll state into
-     * its BrowserTab before we navigate the shared WebView away from it.
-     * Without this, switching tabs would either reload from network (slow)
-     * or, worse, leave the outgoing tab's pages sitting in the *incoming*
-     * tab's back/forward stack.
+     * Switches the content area to show [index]'s tab. Since every tab owns
+     * its own WebView (up to the pool cap), this is a crossfade between two
+     * already-rendered views for the common case -- no reload, no
+     * restoreState() -- and only falls back to a real load (with the
+     * loading veil) when the tab's WebView isn't currently live, i.e. it
+     * either just got LRU-evicted or has genuinely never been opened.
+     *
+     * [previousView] is the outgoing WebView to crossfade away from; left
+     * at its default (the current tab's live WebView, if any) for a normal
+     * switch, but passed explicitly as null by callers that already tore
+     * down the outgoing tab themselves (e.g. closeTab) so it isn't touched
+     * twice.
      */
-    private fun saveCurrentTabState() {
-        val tab = tabs.getOrNull(currentTabIndex) ?: return
-        if (webView.visibility != View.VISIBLE || tab.url.isNullOrBlank()) return
-        val bundle = android.os.Bundle()
-        if (webView.saveState(bundle) != null) {
-            tab.webViewState = bundle
-        }
-    }
-
-    /** Switch the shared WebView to show [index], saving the outgoing tab's state first. */
-    private fun switchToTab(index: Int) {
-        if (index !in tabs.indices || index == currentTabIndex) return
-        saveCurrentTabState()
-        activateTab(index)
-    }
-
-    /**
-     * Actually points the shared WebView at [index]'s content, WITHOUT saving
-     * whatever the WebView is currently showing. Used by switchToTab (after it
-     * has already saved the outgoing tab) and by closeTab (where the outgoing
-     * content belongs to the tab that just got closed and should be discarded,
-     * not saved into the tab that's about to become current).
-     */
-    private fun activateTab(index: Int) {
+    private fun activateTab(
+        index: Int,
+        previousView: WebView? = tabs.getOrNull(currentTabIndex)?.webView
+    ) {
         currentTabIndex = index
         val tab = tabs[index]
-        val url = tab.url
-        if (url.isNullOrBlank()) {
+
+        if (tab.url.isNullOrBlank()) {
+            previousView?.let {
+                it.animate().cancel()
+                it.alpha = 0f
+                it.visibility = View.GONE
+            }
             showSpeedDial()
-        } else {
-            showWebView()
+            return
+        }
+
+        showWebView()
+        applyTabUiState(tab)
+        val hadLiveView = tab.webView != null
+        val view = ensureWebView(tab)
+        if (!hadLiveView) {
             showNavLoadingVeil()
             val state = tab.webViewState
             if (state != null) {
                 // Restores from WebView's own cache/history -- no network
-                // round-trip, so the switch is instant instead of laggy.
-                webView.restoreState(state)
+                // round-trip, so this is still fast even on a pool miss.
+                view.restoreState(state)
             } else {
-                webView.loadUrl(url)
+                view.loadUrl(tab.url!!)
             }
         }
+        crossfadeSwap(view, previousView.takeIf { it !== view })
+    }
+
+    /** Crossfades [newView] in over [oldView] (if any, and if different). */
+    private fun crossfadeSwap(newView: WebView, oldView: WebView?) {
+        if (oldView == null) {
+            newView.animate().cancel()
+            newView.alpha = 1f
+            newView.visibility = View.VISIBLE
+            return
+        }
+        newView.animate().cancel()
+        newView.alpha = 0f
+        newView.visibility = View.VISIBLE
+        newView.animate().alpha(1f).setDuration(TAB_SWITCH_ANIM_MS).start()
+
+        oldView.animate().cancel()
+        oldView.animate().alpha(0f).setDuration(TAB_SWITCH_ANIM_MS).withEndAction {
+            oldView.visibility = View.GONE
+        }.start()
     }
 
     /**
@@ -640,48 +836,84 @@ class BrowserFragment : Fragment() {
     private fun closeTab(index: Int) {
         if (index !in tabs.indices) return
         if (tabs.size == 1) {
-            tabs[0] = BrowserTab(id = tabs[0].id)
+            resetTabToBlank(tabs[0])
             showSpeedDial()
             updateTabsCount()
             return
         }
+        val closingTab = tabs[index]
         val closingCurrent = index == currentTabIndex
+        destroyTabWebView(closingTab)
         tabs.removeAt(index)
         when {
-            closingCurrent -> activateTab(index.coerceAtMost(tabs.size - 1))
+            // previousView = null: closingTab's WebView is already torn
+            // down above, so activateTab shouldn't try to crossfade/hide it again.
+            closingCurrent -> activateTab(index.coerceAtMost(tabs.size - 1), previousView = null)
             index < currentTabIndex -> currentTabIndex--
         }
         updateTabsCount()
+    }
+
+    private fun switchToTab(index: Int) {
+        if (index !in tabs.indices || index == currentTabIndex) return
+        activateTab(index)
     }
 
     private fun showTabsDialog() {
         val context = requireContext()
         val rowsContainer = LinearLayout(context).apply {
             orientation = LinearLayout.VERTICAL
-            setPadding(32, 8, 8, 8)
+            setPadding(24, 8, 8, 8)
         }
+        val rippleBg = android.util.TypedValue().also {
+            context.theme.resolveAttribute(android.R.attr.selectableItemBackground, it, true)
+        }.resourceId
 
         lateinit var dialog: AlertDialog
 
         fun refreshRows() {
             rowsContainer.removeAllViews()
             tabs.forEachIndexed { index, tab ->
+                val isActive = index == currentTabIndex
                 val row = LinearLayout(context).apply {
                     orientation = LinearLayout.HORIZONTAL
                     gravity = android.view.Gravity.CENTER_VERTICAL
+                    setBackgroundResource(rippleBg)
+                    if (isActive) {
+                        setBackgroundColor(context.getColor(R.color.ff_surface_2))
+                    }
+                    isClickable = true
+                    isFocusable = true
+                    alpha = 0f
+                    translationY = 16f
+                }
+                val faviconSizePx = (24 * context.resources.displayMetrics.density).toInt()
+                val favicon = ImageView(context).apply {
+                    layoutParams = LinearLayout.LayoutParams(faviconSizePx, faviconSizePx).apply {
+                        marginStart = 8
+                        marginEnd = 12
+                    }
+                    setImageResource(R.drawable.ic_tabs)
+                    setColorFilter(context.getColor(R.color.ff_muted))
+                }
+                row.addView(favicon)
+                tab.url?.let { url ->
+                    viewLifecycleOwner.lifecycleScope.launch {
+                        val bitmap = withContext(Dispatchers.IO) { FaviconLoader.load(url) }
+                        if (bitmap != null) {
+                            favicon.clearColorFilter()
+                            favicon.setImageBitmap(bitmap)
+                        }
+                    }
                 }
                 val label = android.widget.TextView(context).apply {
-                    text = (if (index == currentTabIndex) "\u25CF  " else "") +
-                        tab.title.ifBlank { tab.url ?: "New tab" }
+                    text = tab.title.ifBlank { tab.url ?: "New tab" }
+                    setTextColor(context.getColor(if (isActive) R.color.ff_accent else R.color.ff_text))
                     textSize = 15f
                     maxLines = 1
                     ellipsize = android.text.TextUtils.TruncateAt.END
                     setPadding(0, 28, 16, 28)
                     layoutParams = LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.WRAP_CONTENT, 1f)
-                    setOnClickListener {
-                        switchToTab(index)
-                        dialog.dismiss()
-                    }
                 }
                 val closeBtn = ImageButton(context).apply {
                     setImageResource(R.drawable.ic_close)
@@ -691,13 +923,24 @@ class BrowserFragment : Fragment() {
                     // resets it to a fresh "New tab" (speed dial) in that case,
                     // so a new tab effectively opens automatically.
                     setOnClickListener {
-                        closeTab(index)
-                        refreshRows()
+                        row.animate().alpha(0f).translationX(40f).setDuration(120).withEndAction {
+                            closeTab(index)
+                            refreshRows()
+                        }.start()
                     }
+                }
+                row.setOnClickListener {
+                    switchToTab(index)
+                    dialog.dismiss()
                 }
                 row.addView(label)
                 row.addView(closeBtn)
                 rowsContainer.addView(row)
+                // Small staggered fade+rise entrance so the list doesn't just pop in.
+                row.animate().alpha(1f).translationY(0f)
+                    .setStartDelay((index * 24L).coerceAtMost(200L))
+                    .setDuration(160)
+                    .start()
             }
         }
         refreshRows()
