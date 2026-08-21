@@ -4,6 +4,7 @@ import android.app.Notification
 import android.app.PendingIntent
 import android.content.Context
 import android.content.Intent
+import android.net.Uri
 import androidx.core.app.NotificationCompat
 import androidx.core.app.ServiceCompat
 import androidx.lifecycle.LifecycleService
@@ -241,6 +242,15 @@ class DownloadService : LifecycleService() {
             val result = withContext(Dispatchers.IO) {
                 if (LinkParser.isMagnetLink(sourceUrl)) {
                     engine.downloadMagnet(sourceUrl, baseDir)
+                } else if (sourceUrl.startsWith("content://")) {
+                    // A .torrent file picked from local storage via the system file
+                    // picker (HomeFragment's "Pick .torrent file" button) -- read its
+                    // bytes through the ContentResolver rather than fetching over HTTP.
+                    val bytes = applicationContext.contentResolver
+                        .openInputStream(Uri.parse(sourceUrl))
+                        ?.use { it.readBytes() }
+                        ?: throw RuntimeException("Could not read the selected .torrent file")
+                    engine.downloadTorrentFile(bytes, baseDir)
                 } else {
                     val bytes = client.newCall(okhttp3.Request.Builder().url(sourceUrl).build())
                         .execute().use { resp ->

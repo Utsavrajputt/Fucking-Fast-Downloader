@@ -1,6 +1,8 @@
 package com.invictus.xmd.ui
 
 import android.content.ClipboardManager
+import android.content.Intent
+import android.net.Uri
 import android.os.Bundle
 import android.text.Editable
 import android.text.TextWatcher
@@ -10,6 +12,8 @@ import android.view.ViewGroup
 import android.widget.EditText
 import android.widget.TextView
 import android.widget.Toast
+import androidx.activity.result.ActivityResultLauncher
+import androidx.activity.result.contract.ActivityResultContracts
 import androidx.fragment.app.Fragment
 import com.google.android.material.button.MaterialButton
 import com.invictus.xmd.R
@@ -38,6 +42,15 @@ class HomeFragment : Fragment() {
         checkClipboard()
     }
 
+    // Lets the user pick a .torrent file already sitting on the device
+    // (Downloads folder, a file manager, etc.) instead of only pasting a
+    // magnet link or a remote .torrent URL. Must be registered here, before
+    // the fragment reaches CREATED.
+    private val pickTorrentFileLauncher: ActivityResultLauncher<Array<String>> =
+        registerForActivityResult(ActivityResultContracts.OpenDocument()) { uri ->
+            if (uri != null) onTorrentFilePicked(uri)
+        }
+
     // ── Lifecycle ─────────────────────────────────────────────────────────
 
     override fun onCreateView(
@@ -53,6 +66,13 @@ class HomeFragment : Fragment() {
         view.findViewById<View>(R.id.downloadButton).setOnClickListener { onDownloadClicked() }
         view.findViewById<View>(R.id.clipboardAddButton).setOnClickListener { onClipboardAddClicked() }
         view.findViewById<View>(R.id.clipboardDismissButton).setOnClickListener { dismissClipboardBanner() }
+        view.findViewById<View>(R.id.pickTorrentFileButton).setOnClickListener {
+            // "application/x-bittorrent" is the correct mime type for .torrent
+            // files, but plenty of file managers/devices mis-tag or don't
+            // recognize it -- fall back to "*/*" so the picker still opens
+            // and shows every file rather than coming back empty.
+            pickTorrentFileLauncher.launch(arrayOf("application/x-bittorrent", "*/*"))
+        }
 
         linksInput.addTextChangedListener(object : TextWatcher {
             override fun beforeTextChanged(s: CharSequence?, start: Int, count: Int, after: Int) {}
@@ -187,6 +207,21 @@ class HomeFragment : Fragment() {
         }
         (activity as? Callbacks)?.triggerDownloadDirect(lines)
         linksInput.setText("")
+    }
+
+    /**
+     * The picked file is already a complete .torrent -- nothing to resolve --
+     * so this goes straight through the same direct-download fast path as a
+     * pasted magnet link or remote .torrent URL, just with the content://
+     * URI as the "link".
+     */
+    private fun onTorrentFilePicked(uri: Uri) {
+        runCatching {
+            requireContext().contentResolver.takePersistableUriPermission(
+                uri, Intent.FLAG_GRANT_READ_URI_PERMISSION
+            )
+        }
+        (activity as? Callbacks)?.triggerDownloadDirect(listOf(uri.toString()))
     }
 
     // ── Helpers ───────────────────────────────────────────────────────────

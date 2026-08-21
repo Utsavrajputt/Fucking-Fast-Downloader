@@ -145,6 +145,24 @@
                         android:gravity="end">
 
                         <com.google.android.material.button.MaterialButton
+                            android:id="@+id/pickTorrentFileButton"
+                            style="@style/Widget.MaterialComponents.Button.TextButton"
+                            android:layout_width="wrap_content"
+                            android:layout_height="wrap_content"
+                            android:layout_marginEnd="8dp"
+                            android:layout_gravity="center_vertical"
+                            android:text="@string/action_pick_torrent_file"
+                            android:textColor="@color/ff_muted"
+                            android:textSize="12sp"
+                            android:minWidth="0dp"
+                            android:paddingHorizontal="8dp" />
+
+                        <View
+                            android:layout_width="0dp"
+                            android:layout_height="1dp"
+                            android:layout_weight="1" />
+
+                        <com.google.android.material.button.MaterialButton
                             android:id="@+id/prepareButton"
                             style="@style/Widget.MaterialComponents.Button.OutlinedButton"
                             android:layout_width="wrap_content"

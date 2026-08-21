@@ -35,9 +35,16 @@ object LinkParser {
     fun isMagnetLink(link: String): Boolean =
         link.trim().startsWith("magnet:?", ignoreCase = true)
 
-    /** True for an http(s) link that points straight at a .torrent file. */
+    /**
+     * True for an http(s) link that points straight at a .torrent file, or
+     * a content:// URI for a .torrent file picked from local storage via
+     * the system file picker (HomeFragment's "Pick .torrent file" button --
+     * the picker's mime filter already restricts choices to .torrent, so
+     * any content:// URI reaching here is trusted to be one).
+     */
     fun isTorrentFileLink(link: String): Boolean {
         val uri = runCatching { URI(link.trim()) }.getOrNull() ?: return false
+        if (uri.scheme == "content") return true
         if (uri.scheme != "http" && uri.scheme != "https") return false
         val name = uri.path?.substringAfterLast('/')?.substringBefore('?').orEmpty()
         return name.endsWith(".torrent", ignoreCase = true)
