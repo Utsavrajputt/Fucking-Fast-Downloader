@@ -44,6 +44,7 @@ import kotlin.coroutines.resume
 class MainActivity : AppCompatActivity(), HomeFragment.Callbacks, DownloadsFragment.Callbacks, BrowserFragment.Callbacks, HistoryFragment.Callbacks {
 
     private lateinit var bottomNav: BottomNavigationView
+    private lateinit var toolbar: androidx.appcompat.widget.Toolbar
 
     // ── Swipe-to-switch-tabs (bottom nav) ───────────────────────────────
     // Was previously wired into the Browser fragment's WebView (switching
@@ -144,6 +145,41 @@ class MainActivity : AppCompatActivity(), HomeFragment.Callbacks, DownloadsFragm
     // and react only once, only for items the user explicitly retried.
     private val pendingRetryIds = java.util.concurrent.ConcurrentHashMap.newKeySet<String>()
 
+    // ── onResume ──────────────────────────────────────────────────────────
+
+    /**
+     * Re-syncs the toolbar's visibility with whichever tab fragment is
+     * actually showing right now. Needed because the toolbar is only ever
+     * hidden/shown from inside bottomNav's tap listener (see onCreate) --
+     * that's fine while the process stays alive, but if Android kills this
+     * activity in the background (common on low battery / low memory) and
+     * the user reopens it from Recents, onCreate reruns and the toolbar's
+     * view is recreated at its default (visible) state, while
+     * BottomNavigationView restores its selected tab on its own without
+     * ever calling that listener -- so it was possible to come back to the
+     * Browser tab with the "Xmd" toolbar wrongly showing above the
+     * Browser's own address bar. Calling this every onResume (not just
+     * after a fresh process start) covers both cases cheaply.
+     */
+    override fun onResume() {
+        super.onResume()
+        syncToolbarWithVisibleFragment()
+    }
+
+    private fun syncToolbarWithVisibleFragment() {
+        val fm = supportFragmentManager
+        val browserVisible = fm.findFragmentByTag(TAG_BROWSER)?.isHidden == false
+        if (browserVisible) {
+            // The Browser fragment's own address bar is the top bar here --
+            // the shared app toolbar (and its title) would just duplicate it.
+            toolbar.visibility = android.view.View.GONE
+            return
+        }
+        toolbar.visibility = android.view.View.VISIBLE
+        val downloadsVisible = fm.findFragmentByTag(TAG_DOWNLOADS)?.isHidden == false
+        supportActionBar?.title = if (downloadsVisible) "Downloads" else getString(R.string.app_name)
+    }
+
     // ── onCreate ──────────────────────────────────────────────────────────
 
     override fun onCreate(savedInstanceState: Bundle?) {
@@ -151,6 +187,7 @@ class MainActivity : AppCompatActivity(), HomeFragment.Callbacks, DownloadsFragm
         setContentView(R.layout.activity_main)
 
         val toolbar = findViewById<androidx.appcompat.widget.Toolbar>(R.id.toolbar)
+        this.toolbar = toolbar
         setSupportActionBar(toolbar)
         supportActionBar?.title = getString(R.string.app_name)
 
