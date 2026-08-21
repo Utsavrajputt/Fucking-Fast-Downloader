@@ -26,7 +26,7 @@ import java.util.concurrent.TimeUnit
 class DnsOverHttpsResolver(private val dohUrl: String) : Dns {
 
     companion object {
-        const val ADGUARD_DOH_URL = "https://dns.adguard.com/dns-query"
+        const val ADGUARD_DOH_URL = "https://dns.adguard.com"
     }
 
     // Separate, short-timeout client for the DoH lookups themselves --
