@@ -16,3 +16,11 @@
 
 # Kotlin coroutines internals occasionally trip up R8 without this.
 -dontwarn kotlinx.coroutines.**
+
+# libtorrent4j: its SWIG-generated JNI glue is loaded/called by name from
+# native code, so R8 can't see those references -- without this keep rule a
+# release build crashes at runtime the moment TorrentEngine touches the
+# session (works fine in debug, which is why this is easy to miss).
+-keep class org.libtorrent4j.** { *; }
+-keep class org.libtorrent4j.swig.** { *; }
+-dontwarn org.libtorrent4j.**

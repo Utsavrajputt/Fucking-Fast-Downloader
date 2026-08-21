@@ -14,6 +14,17 @@ android {
         targetSdk = 34
         versionCode = 4
         versionName = "1.0.0-beta.1"
+
+        // Only shipping the arm64 (arm64-v8a) native libs -- see the
+        // libtorrent4j dependency below, which is arm64-only to match.
+        // Cuts APK size vs. bundling all 4 ABIs; means the app won't
+        // install on 32-bit-only (armeabi-v7a) or x86/x86_64 devices —
+        // fine for real phones today (arm64-v8a has been standard since
+        // ~2017), but rules out emulators running an x86_64 image unless
+        // that emulator also supports arm64 system images.
+        ndk {
+            abiFilters += "arm64-v8a"
+        }
     }
 
     buildTypes {
@@ -60,4 +71,11 @@ dependencies {
     implementation("androidx.room:room-runtime:2.6.1")
     implementation("androidx.room:room-ktx:2.6.1")
     kapt("androidx.room:room-compiler:2.6.1")
+
+    // libtorrent4j: real BitTorrent engine (magnet links + .torrent files) --
+    // see core/TorrentEngine.kt. The main artifact is pure-Java bindings;
+    // arm64-only native .so to match the ndk.abiFilters restriction above
+    // (keeps this from adding an extra native lib per other ABI to the APK).
+    implementation("org.libtorrent4j:libtorrent4j:2.1.0-38")
+    implementation("org.libtorrent4j:libtorrent4j-android-arm64:2.1.0-38")
 }

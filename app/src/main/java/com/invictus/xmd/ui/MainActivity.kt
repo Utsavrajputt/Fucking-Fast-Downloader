@@ -325,12 +325,16 @@ class MainActivity : AppCompatActivity(), HomeFragment.Callbacks, DownloadsFragm
     private fun handleIncomingIntent(intent: Intent) {
         val url = when (intent.action) {
             Intent.ACTION_VIEW -> intent.data?.toString()
-            Intent.ACTION_SEND -> intent.getStringExtra(Intent.EXTRA_TEXT)
-                ?.let { text -> Regex("""https?://\S+""").find(text)?.value }
+            Intent.ACTION_SEND -> intent.getStringExtra(Intent.EXTRA_TEXT)?.trim().orEmpty().let { text ->
+                if (text.startsWith("magnet:", ignoreCase = true)) text
+                else Regex("""https?://\S+""").find(text)?.value
+            }
             else -> null
         }?.trim()
 
-        if (url.isNullOrEmpty() || !(url.startsWith("http://") || url.startsWith("https://"))) return
+        val isHttp = url != null && (url.startsWith("http://") || url.startsWith("https://"))
+        val isMagnet = url != null && url.startsWith("magnet:", ignoreCase = true)
+        if (url.isNullOrEmpty() || !(isHttp || isMagnet)) return
 
         // Consume it so rotation / re-entering onResume doesn't re-queue the
         // same link a second time.

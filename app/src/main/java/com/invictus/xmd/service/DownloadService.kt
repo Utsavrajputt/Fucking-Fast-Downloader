@@ -15,8 +15,10 @@ import com.invictus.xmd.core.DownloadCancelledException
 import com.invictus.xmd.core.DownloadCategory
 import com.invictus.xmd.core.DownloadEngine
 import com.invictus.xmd.core.ItemStatus
+import com.invictus.xmd.core.LinkParser
 import com.invictus.xmd.core.QueueRepository
 import com.invictus.xmd.core.Settings
+import com.invictus.xmd.core.TorrentEngine
 import com.invictus.xmd.ui.MainActivity
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.launch
@@ -114,6 +116,9 @@ class DownloadService : LifecycleService() {
     /** Active engines keyed by queue item id, so per-item controls can target the right download. */
     private val engines = ConcurrentHashMap<String, DownloadEngine>()
 
+    /** Same idea as [engines], for magnet/.torrent items running through TorrentEngine instead. */
+    private val torrentEngines = ConcurrentHashMap<String, TorrentEngine>()
+
     // Number of worker loops currently alive. Workers exit their loop the
     // moment claimNextReady() returns null (nothing READY *right now*) --
     // previously that meant a single ACTION_START only ever spun up workers
@@ -140,16 +145,19 @@ class DownloadService : LifecycleService() {
             }
             ACTION_PAUSE_ITEM -> intent.getStringExtra(EXTRA_ITEM_ID)?.let { id ->
                 engines[id]?.pause()
+                torrentEngines[id]?.pause()
                 QueueRepository.update(id) { it.copy(status = ItemStatus.PAUSED) }
                 updateNotification()
             }
             ACTION_RESUME_ITEM -> intent.getStringExtra(EXTRA_ITEM_ID)?.let { id ->
                 engines[id]?.resume()
+                torrentEngines[id]?.resume()
                 QueueRepository.update(id) { it.copy(status = ItemStatus.DOWNLOADING) }
                 updateNotification()
             }
             ACTION_CANCEL_ITEM -> intent.getStringExtra(EXTRA_ITEM_ID)?.let { id ->
                 engines[id]?.cancel()
+                torrentEngines[id]?.cancel()
                 // During an auto-retry backoff wait there's no live engine (it was
                 // removed before the delay), so there's nothing for .cancel() above
                 // to interrupt -- mark it cancelled directly; the retry loop checks
@@ -162,6 +170,7 @@ class DownloadService : LifecycleService() {
             }
             ACTION_CANCEL_ALL -> {
                 engines.values.forEach { it.cancel() }
+                torrentEngines.values.forEach { it.cancel() }
                 QueueRepository.current().filter { it.status == ItemStatus.RETRYING }.forEach { item ->
                     QueueRepository.update(item.id) { it.copy(status = ItemStatus.FAILED, error = "Cancelled") }
                 }
@@ -193,8 +202,67 @@ class DownloadService : LifecycleService() {
     private suspend fun worker() {
         while (true) {
             val item = QueueRepository.claimNextReady() ?: break
-            downloadOne(item.id, item.sourceUrl, item.directUrl, item.category)
+            if (LinkParser.isTorrentLink(item.sourceUrl)) {
+                downloadTorrentOne(item.id, item.sourceUrl)
+            } else {
+                downloadOne(item.id, item.sourceUrl, item.directUrl, item.category)
+            }
             kotlinx.coroutines.delay(BETWEEN_CLAIM_DELAY_MS)
+        }
+    }
+
+    /**
+     * Magnet / .torrent items. No connections/speed-limit settings applied
+     * here yet (libtorrent has its own upload/download rate limiting knobs
+     * that aren't wired up to Settings) -- straightforward "download it and
+     * report progress" for now, mirroring downloadOne()'s status handling.
+     */
+    private suspend fun downloadTorrentOne(itemId: String, sourceUrl: String) {
+        val engine = TorrentEngine(
+            progress = { done, total, speed ->
+                QueueRepository.update(itemId) { it.copy(bytesDone = done, bytesTotal = total, speedBps = speed) }
+                updateNotification()
+            },
+            log = { }
+        )
+        torrentEngines[itemId] = engine
+
+        try {
+            val baseDir = if (Settings.saveToDownloadsFolder()) {
+                Environment.getExternalStoragePublicDirectory(Environment.DIRECTORY_DOWNLOADS)
+            } else {
+                // Own subfolder rather than DownloadCategory.folderName -- a
+                // torrent is very often a multi-file batch (a whole season,
+                // an album, a repack's several parts) that belongs together
+                // as one folder rather than split across Videos/Music/Others.
+                File(Environment.getExternalStorageDirectory(), "Xmd/Torrents")
+            }
+
+            val result = withContext(Dispatchers.IO) {
+                if (LinkParser.isMagnetLink(sourceUrl)) {
+                    engine.downloadMagnet(sourceUrl, baseDir)
+                } else {
+                    val bytes = client.newCall(okhttp3.Request.Builder().url(sourceUrl).build())
+                        .execute().use { resp ->
+                            if (!resp.isSuccessful) {
+                                throw RuntimeException("Could not fetch .torrent file (HTTP ${resp.code})")
+                            }
+                            resp.body?.bytes() ?: throw RuntimeException("Empty .torrent file")
+                        }
+                    engine.downloadTorrentFile(bytes, baseDir)
+                }
+            }
+
+            QueueRepository.update(itemId) {
+                it.copy(fileName = result.name, status = ItemStatus.DONE)
+            }
+        } catch (e: DownloadCancelledException) {
+            QueueRepository.update(itemId) { it.copy(status = ItemStatus.FAILED, error = "Cancelled") }
+        } catch (e: Exception) {
+            QueueRepository.update(itemId) { it.copy(status = ItemStatus.FAILED, error = e.message ?: "Torrent download failed") }
+        } finally {
+            torrentEngines.remove(itemId)
+            updateNotification()
         }
     }
 

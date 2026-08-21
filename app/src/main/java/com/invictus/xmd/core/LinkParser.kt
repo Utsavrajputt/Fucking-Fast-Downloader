@@ -31,14 +31,33 @@ object LinkParser {
         return (uri.scheme == "http" || uri.scheme == "https") && uri.host == DIRECT_HOST
     }
 
+    /** True for a magnet: URI (magnet:?xt=urn:btih:...). */
+    fun isMagnetLink(link: String): Boolean =
+        link.trim().startsWith("magnet:?", ignoreCase = true)
+
+    /** True for an http(s) link that points straight at a .torrent file. */
+    fun isTorrentFileLink(link: String): Boolean {
+        val uri = runCatching { URI(link.trim()) }.getOrNull() ?: return false
+        if (uri.scheme != "http" && uri.scheme != "https") return false
+        val name = uri.path?.substringAfterLast('/')?.substringBefore('?').orEmpty()
+        return name.endsWith(".torrent", ignoreCase = true)
+    }
+
+    fun isTorrentLink(link: String): Boolean = isMagnetLink(link) || isTorrentFileLink(link)
+
     /**
      * True for any well-formed http(s) URL that isn't a FuckingFast share
      * link or a fitgirl-repacks page — i.e. something already downloadable
      * as-is (dl.fuckingfast.co, but also R2/S3/other CDN direct links a
-     * user might paste after resolving elsewhere).
+     * user might paste after resolving elsewhere). Magnet/.torrent links are
+     * "generic" in the same sense — nothing to resolve, DownloadService can
+     * pick them up and start immediately — even though they don't use an
+     * http(s) scheme themselves (magnet: has no host at all).
      */
     fun isGenericDownloadUrl(link: String): Boolean {
-        val uri = runCatching { URI(link.trim()) }.getOrNull() ?: return false
+        val trimmed = link.trim()
+        if (isTorrentLink(trimmed)) return true
+        val uri = runCatching { URI(trimmed) }.getOrNull() ?: return false
         if (uri.scheme != "http" && uri.scheme != "https") return false
         if (uri.host.isNullOrBlank()) return false
         if (isShareLink(link)) return false
