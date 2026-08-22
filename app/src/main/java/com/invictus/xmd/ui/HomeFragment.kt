@@ -1,5 +1,6 @@
 package com.invictus.xmd.ui
 
+import android.app.AlertDialog
 import android.content.ClipboardManager
 import android.content.Intent
 import android.net.Uri
@@ -15,7 +16,9 @@ import android.widget.TextView
 import android.widget.Toast
 import androidx.activity.result.ActivityResultLauncher
 import androidx.activity.result.contract.ActivityResultContracts
+import androidx.core.widget.doAfterTextChanged
 import androidx.fragment.app.Fragment
+import androidx.appcompat.widget.TooltipCompat
 import com.google.android.material.button.MaterialButton
 import com.invictus.xmd.R
 import com.invictus.xmd.core.ItemStatus
@@ -68,15 +71,9 @@ class HomeFragment : Fragment() {
         view.findViewById<View>(R.id.downloadButton).setOnClickListener { onDownloadClicked() }
         view.findViewById<View>(R.id.clipboardAddButton).setOnClickListener { onClipboardAddClicked() }
         view.findViewById<View>(R.id.clipboardDismissButton).setOnClickListener { dismissClipboardBanner() }
-        view.findViewById<View>(R.id.pickTorrentFileButton).setOnClickListener {
-            // application/x-bittorrent is the correct mime type for .torrent
-            // files, but plenty of file managers/devices mis-tag them as
-            // generic octet-stream -- include both so real torrent files
-            // aren't hidden by the picker, without falling all the way back
-            // to "*/*" (which would show every file on the device).
-            pickTorrentFileLauncher.launch(
-                arrayOf("application/x-bittorrent", "application/octet-stream")
-            )
+        view.findViewById<View>(R.id.addTorrentButton).apply {
+            setOnClickListener { showAddTorrentDialog() }
+            TooltipCompat.setTooltipText(this, getString(R.string.action_add_torrent))
         }
 
         linksInput.addTextChangedListener(object : TextWatcher {
@@ -212,6 +209,73 @@ class HomeFragment : Fragment() {
         }
         (activity as? Callbacks)?.triggerDownloadDirect(lines)
         linksInput.setText("")
+    }
+
+    // ── Add Torrent dialog ───────────────────────────────────────────────
+
+    /**
+     * Single entry point for both torrent paths (magnet link or a local
+     * .torrent file): a confirmation dialog so tapping the magnet icon
+     * doesn't silently start a download, matching how Prepare/Download
+     * already ask before doing anything. "Pick .torrent file instead"
+     * inside the dialog re-launches the existing SAF picker; picking a
+     * file dismisses this dialog and hands off to the same
+     * triggerDownloadTorrentFile callback as before.
+     */
+    private fun showAddTorrentDialog() {
+        val dialogView = LayoutInflater.from(requireContext())
+            .inflate(R.layout.dialog_add_torrent, null)
+
+        val linkInput = dialogView.findViewById<EditText>(R.id.torrentLinkInput)
+        val nameText = dialogView.findViewById<TextView>(R.id.torrentNameText)
+        val pickFileText = dialogView.findViewById<TextView>(R.id.torrentPickFileText)
+        val startButton = dialogView.findViewById<MaterialButton>(R.id.torrentStartButton)
+        val cancelButton = dialogView.findViewById<MaterialButton>(R.id.torrentCancelButton)
+
+        val dialog = AlertDialog.Builder(requireContext())
+            .setView(dialogView)
+            .setCancelable(true)
+            .create()
+
+        fun updateNamePreview() {
+            val link = linkInput.text?.toString()?.trim().orEmpty()
+            nameText.text = magnetDisplayName(link)
+                ?: getString(R.string.torrent_dialog_name_placeholder)
+        }
+        linkInput.doAfterTextChanged { updateNamePreview() }
+        updateNamePreview()
+
+        pickFileText.setOnClickListener {
+            dialog.dismiss()
+            pickTorrentFileLauncher.launch(
+                arrayOf("application/x-bittorrent", "application/octet-stream")
+            )
+        }
+
+        cancelButton.setOnClickListener { dialog.dismiss() }
+
+        startButton.setOnClickListener {
+            val link = linkInput.text?.toString()?.trim().orEmpty()
+            if (!LinkParser.isMagnetLink(link)) {
+                Toast.makeText(
+                    requireContext(),
+                    R.string.torrent_dialog_invalid_link,
+                    Toast.LENGTH_SHORT
+                ).show()
+                return@setOnClickListener
+            }
+            dialog.dismiss()
+            (activity as? Callbacks)?.triggerDownloadDirect(listOf(link))
+        }
+
+        dialog.show()
+    }
+
+    /** Best-effort display name for a magnet link, taken from its dn= param. */
+    private fun magnetDisplayName(link: String): String? {
+        if (!LinkParser.isMagnetLink(link)) return null
+        val dn = Regex("[?&]dn=([^&]+)").find(link)?.groupValues?.get(1) ?: return null
+        return runCatching { Uri.decode(dn.replace('+', ' ')) }.getOrNull()?.takeIf { it.isNotBlank() }
     }
 
     /**

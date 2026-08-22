@@ -9,6 +9,14 @@
     <string name="action_prepare">Prepare</string>
     <string name="action_download">Download Ready Files</string>
     <string name="action_pick_torrent_file">Pick .torrent file</string>
+    <string name="action_add_torrent">Add torrent</string>
+    <string name="torrent_dialog_title">Add Torrent</string>
+    <string name="torrent_dialog_link_label">Link</string>
+    <string name="torrent_dialog_link_hint">Paste magnet link (magnet:?xt=...)</string>
+    <string name="torrent_dialog_name_label">Name</string>
+    <string name="torrent_dialog_name_placeholder">Detected from link</string>
+    <string name="torrent_dialog_pick_file">Pick .torrent file instead</string>
+    <string name="torrent_dialog_invalid_link">Paste a valid magnet link, or pick a .torrent file</string>
     <string name="action_download_direct">Download</string>
     <string name="action_pause">Pause</string>
     <string name="action_resume">Resume</string>

@@ -145,15 +145,15 @@
                         android:gravity="end">
 
                         <ImageButton
-                            android:id="@+id/pickTorrentFileButton"
+                            android:id="@+id/addTorrentButton"
                             android:layout_width="36dp"
                             android:layout_height="36dp"
                             android:layout_gravity="center_vertical"
                             android:background="@drawable/bg_circle_outline"
                             android:padding="8dp"
-                            android:src="@drawable/ic_add"
+                            android:src="@drawable/ic_magnet"
                             android:tint="@color/ff_accent"
-                            android:contentDescription="@string/action_pick_torrent_file" />
+                            android:contentDescription="@string/action_add_torrent" />
 
                         <View
                             android:layout_width="0dp"
