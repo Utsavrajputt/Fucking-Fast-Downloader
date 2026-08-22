@@ -53,6 +53,13 @@
     <string name="settings_auto_retry_hint">Retries up to 3 times automatically if the connection times out or drops. Expired links still require a manual retry.</string>
     <string name="settings_save_to_downloads">Save to Downloads Folder</string>
     <string name="settings_save_to_downloads_hint">Save files directly to the Downloads folder instead of the app folder.</string>
+    <string name="settings_ytdlp_title">YouTube downloader (yt-dlp)</string>
+    <string name="settings_ytdlp_hint">Required for YouTube downloads. Adds on-device storage once installed.</string>
+    <string name="settings_ytdlp_install">Install</string>
+    <string name="settings_ytdlp_delete">Delete</string>
+    <string name="settings_ytdlp_installing">Installing…</string>
+    <string name="settings_ytdlp_status_installed">Installed ✓</string>
+    <string name="settings_ytdlp_status_not_installed">Not installed</string>
     <string name="settings_save">Save</string>
 
     <!-- Browser -->

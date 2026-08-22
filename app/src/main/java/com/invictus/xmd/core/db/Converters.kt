@@ -3,6 +3,7 @@ package com.invictus.xmd.core.db
 import androidx.room.TypeConverter
 import com.invictus.xmd.core.DownloadCategory
 import com.invictus.xmd.core.ItemStatus
+import com.invictus.xmd.core.MediaPlatform
 
 /**
  * Room can't store enums natively -- it needs an explicit mapping to a
@@ -24,4 +25,11 @@ class Converters {
     @TypeConverter
     fun toDownloadCategory(value: String): DownloadCategory =
         runCatching { DownloadCategory.valueOf(value) }.getOrDefault(DownloadCategory.default())
+
+    @TypeConverter
+    fun fromMediaPlatform(value: MediaPlatform): String = value.name
+
+    @TypeConverter
+    fun toMediaPlatform(value: String): MediaPlatform =
+        runCatching { MediaPlatform.valueOf(value) }.getOrDefault(MediaPlatform.DIRECT)
 }

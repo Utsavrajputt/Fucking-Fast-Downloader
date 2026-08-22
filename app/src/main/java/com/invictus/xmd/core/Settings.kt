@@ -75,4 +75,19 @@ object Settings {
     fun setDnsCustomUrl(value: String) {
         prefs.edit().putString(KEY_DNS_CUSTOM_URL, value.trim()).apply()
     }
+
+    // ── YouTube downloader (yt-dlp) install/update state (Full build only) ─
+    private const val KEY_YTDLP_INSTALLED = "ytdlp_installed"
+    private const val KEY_YTDLP_LAST_UPDATE_MS = "ytdlp_last_update_ms"
+
+    fun ytDlpInstalled(): Boolean = prefs.getBoolean(KEY_YTDLP_INSTALLED, false)
+    fun setYtDlpInstalled(value: Boolean) {
+        prefs.edit().putBoolean(KEY_YTDLP_INSTALLED, value).apply()
+    }
+
+    /** Last time yt-dlp's self-update ran (successfully or not) -- used to throttle to roughly once a day. 0 = never. */
+    fun ytDlpLastUpdateMs(): Long = prefs.getLong(KEY_YTDLP_LAST_UPDATE_MS, 0L)
+    fun setYtDlpLastUpdateMs(value: Long) {
+        prefs.edit().putLong(KEY_YTDLP_LAST_UPDATE_MS, value).apply()
+    }
 }

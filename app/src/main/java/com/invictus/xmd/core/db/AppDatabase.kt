@@ -11,7 +11,7 @@ import com.invictus.xmd.core.Bookmark
 import com.invictus.xmd.core.HistoryEntry
 import com.invictus.xmd.core.QueueItem
 
-@Database(entities = [QueueItem::class, Bookmark::class, HistoryEntry::class], version = 3, exportSchema = false)
+@Database(entities = [QueueItem::class, Bookmark::class, HistoryEntry::class], version = 4, exportSchema = false)
 @TypeConverters(Converters::class)
 abstract class AppDatabase : RoomDatabase() {
 
@@ -59,6 +59,18 @@ abstract class AppDatabase : RoomDatabase() {
             }
         }
 
+        // v3 -> v4: adds YouTube (yt-dlp) fields to queue_items -- platform,
+        // the chosen quality's format selector/label, and percent-based
+        // progress (yt-dlp reports 0-100%, not bytes, unlike DIRECT/torrent).
+        private val MIGRATION_3_4 = object : Migration(3, 4) {
+            override fun migrate(db: SupportSQLiteDatabase) {
+                db.execSQL("ALTER TABLE queue_items ADD COLUMN platform TEXT NOT NULL DEFAULT 'DIRECT'")
+                db.execSQL("ALTER TABLE queue_items ADD COLUMN mediaFormatSelector TEXT")
+                db.execSQL("ALTER TABLE queue_items ADD COLUMN mediaFormatLabel TEXT")
+                db.execSQL("ALTER TABLE queue_items ADD COLUMN progressPercent INTEGER NOT NULL DEFAULT -1")
+            }
+        }
+
         fun get(context: Context): AppDatabase =
             instance ?: synchronized(this) {
                 instance ?: Room.databaseBuilder(
@@ -66,7 +78,7 @@ abstract class AppDatabase : RoomDatabase() {
                     AppDatabase::class.java,
                     "ff_queue.db"
                 )
-                    .addMigrations(MIGRATION_1_2, MIGRATION_2_3)
+                    .addMigrations(MIGRATION_1_2, MIGRATION_2_3, MIGRATION_3_4)
                     // Safety net only for schema drift beyond the explicit
                     // migrations above (shouldn't trigger in practice).
                     .fallbackToDestructiveMigration()

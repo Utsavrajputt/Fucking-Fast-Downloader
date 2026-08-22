@@ -25,12 +25,16 @@ import androidx.lifecycle.lifecycleScope
 import com.google.android.material.bottomnavigation.BottomNavigationView
 import com.google.android.material.snackbar.Snackbar
 import com.invictus.xmd.R
+import com.invictus.xmd.BuildConfig
+import com.invictus.xmd.core.DownloadCategory
 import com.invictus.xmd.core.ItemStatus
 import com.invictus.xmd.core.LinkParser
+import com.invictus.xmd.core.MediaPlatform
 import com.invictus.xmd.core.QueueItem
 import com.invictus.xmd.core.QueueRepository
 import com.invictus.xmd.core.ResolutionError
 import com.invictus.xmd.core.Settings
+import com.invictus.xmd.core.YtDlpManager
 import com.invictus.xmd.service.DownloadService
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.delay
@@ -343,7 +347,7 @@ class MainActivity : AppCompatActivity(), HomeFragment.Callbacks, DownloadsFragm
 
         bottomNav.selectedItemId = R.id.nav_home
 
-        val needsPrepare = LinkParser.isShareLink(url) || LinkParser.isFitgirlPage(url)
+        val needsPrepare = LinkParser.isShareLink(url) || LinkParser.isFitgirlPage(url) || LinkParser.isYoutubeLink(url)
         if (needsPrepare) {
             triggerPrepare(listOf(url))
         } else {
@@ -558,7 +562,12 @@ class MainActivity : AppCompatActivity(), HomeFragment.Callbacks, DownloadsFragm
      * to READY and the download service picks it up immediately.
      */
     private suspend fun retrySingle(item: QueueItem) {
-        val needsResolve = LinkParser.isShareLink(item.sourceUrl)
+        // YouTube items only need a fresh resolve (quality picker) if a
+        // quality was never actually chosen (e.g. the picker was dismissed
+        // without a selection) -- once chosen, retry should just re-run
+        // yt-dlp with the same quality rather than re-prompting.
+        val needsResolve = LinkParser.isShareLink(item.sourceUrl) ||
+            (LinkParser.isYoutubeLink(item.sourceUrl) && item.mediaFormatSelector == null)
         QueueRepository.update(item.id) {
             it.copy(
                 status = if (needsResolve) ItemStatus.RESOLVING else ItemStatus.READY,
@@ -611,6 +620,10 @@ class MainActivity : AppCompatActivity(), HomeFragment.Callbacks, DownloadsFragm
     }
 
     private suspend fun resolveOne(item: QueueItem) {
+        if (LinkParser.isYoutubeLink(item.sourceUrl)) {
+            resolveYoutube(item)
+            return
+        }
         if (LinkParser.isGenericDownloadUrl(item.sourceUrl)) {
             QueueRepository.update(item.id) {
                 it.copy(directUrl = item.sourceUrl, status = ItemStatus.READY)
@@ -658,6 +671,79 @@ class MainActivity : AppCompatActivity(), HomeFragment.Callbacks, DownloadsFragm
                 it.copy(status = ItemStatus.FAILED, error = error ?: "Could not resolve link")
             }
         }
+    }
+
+    // ── YouTube resolve (quality picker, no challenge/webview involved) ────
+
+    /**
+     * YouTube items skip the FuckingFast challenge/resolve pipeline
+     * entirely -- instead of a directUrl, the user picks a quality here and
+     * yt-dlp (DownloadService) resolves + downloads + merges it itself later.
+     */
+    private suspend fun resolveYoutube(item: QueueItem) {
+        if (!BuildConfig.HAS_YOUTUBE_SUPPORT) {
+            AlertDialog.Builder(this)
+                .setTitle("YouTube not supported in this build")
+                .setMessage("This is the Lite build, which doesn't include YouTube downloads. Download the Full build from the app's Releases page to use this.")
+                .setPositiveButton(android.R.string.ok, null)
+                .show()
+            QueueRepository.update(item.id) {
+                it.copy(status = ItemStatus.FAILED, error = "YouTube needs the Full build")
+            }
+            return
+        }
+        if (!YtDlpManager.isInstalled(this)) {
+            val openSettings = suspendCancellableCoroutine<Boolean> { cont ->
+                val dialog = AlertDialog.Builder(this)
+                    .setTitle("yt-dlp not installed")
+                    .setMessage("YouTube downloads need the yt-dlp downloader, which isn't installed yet. Install it from Settings first.")
+                    .setPositiveButton("Install now") { _, _ -> cont.resume(true) }
+                    .setNegativeButton(android.R.string.cancel) { _, _ -> cont.resume(false) }
+                    .setOnCancelListener { cont.resume(false) }
+                    .create()
+                cont.invokeOnCancellation { dialog.dismiss() }
+                dialog.show()
+            }
+            QueueRepository.update(item.id) {
+                it.copy(status = ItemStatus.FAILED, error = "yt-dlp not installed")
+            }
+            if (openSettings) showSettingsDialog()
+            return
+        }
+
+        val options = YtDlpManager.standardQualityOptions()
+        val chosen = suspendCancellableCoroutine<YtDlpManager.QualityOption?> { cont ->
+            val labels = options.map { it.label }.toTypedArray()
+            val dialog = AlertDialog.Builder(this)
+                .setTitle(item.fileName ?: "Choose quality")
+                .setItems(labels) { _, which -> cont.resume(options[which]) }
+                .setOnCancelListener { cont.resume(null) }
+                .setNegativeButton(R.string.action_cancel) { d, _ -> d.cancel() }
+                .create()
+            cont.invokeOnCancellation { dialog.dismiss() }
+            dialog.show()
+        }
+
+        if (chosen == null) {
+            QueueRepository.update(item.id) {
+                it.copy(status = ItemStatus.FAILED, error = "Cancelled")
+            }
+            return
+        }
+
+        QueueRepository.update(item.id) {
+            it.copy(
+                status = ItemStatus.READY,
+                platform = MediaPlatform.YOUTUBE,
+                mediaFormatSelector = chosen.formatSelector,
+                mediaFormatLabel = chosen.label,
+                category = if (chosen.isAudioOnly) DownloadCategory.MUSIC else DownloadCategory.VIDEOS
+            )
+        }
+        // Same as the other resolve branches: top workers back up so this
+        // starts downloading right away instead of sitting at READY until
+        // the next unrelated ACTION_START.
+        DownloadService.start(this@MainActivity)
     }
 
     // ── Storage permission ────────────────────────────────────────────────
@@ -730,6 +816,51 @@ class MainActivity : AppCompatActivity(), HomeFragment.Callbacks, DownloadsFragm
         val concurrentInput = view.findViewById<EditText>(R.id.maxConcurrentInput)
         val autoRetrySwitch = view.findViewById<com.google.android.material.switchmaterial.SwitchMaterial>(R.id.autoRetrySwitch)
         val saveToDownloadsSwitch = view.findViewById<com.google.android.material.switchmaterial.SwitchMaterial>(R.id.saveToDownloadsSwitch)
+        val ytdlpDivider    = view.findViewById<android.view.View>(R.id.ytdlpDivider)
+        val ytdlpSection    = view.findViewById<android.view.View>(R.id.ytdlpSection)
+        val ytdlpStatus     = view.findViewById<android.widget.TextView>(R.id.ytdlpStatus)
+        val ytdlpProgress   = view.findViewById<android.widget.ProgressBar>(R.id.ytdlpProgress)
+        val ytdlpButton     = view.findViewById<android.widget.Button>(R.id.ytdlpActionButton)
+
+        if (!BuildConfig.HAS_YOUTUBE_SUPPORT) {
+            // Lite build has no YtDlpManager to back this section with --
+            // hide it entirely rather than show controls that can't do anything.
+            ytdlpDivider.visibility = android.view.View.GONE
+            ytdlpSection.visibility = android.view.View.GONE
+        } else {
+            fun refreshYtDlpRow() {
+                val installed = YtDlpManager.isInstalled(this)
+                ytdlpStatus.setText(if (installed) R.string.settings_ytdlp_status_installed else R.string.settings_ytdlp_status_not_installed)
+                ytdlpButton.setText(if (installed) R.string.settings_ytdlp_delete else R.string.settings_ytdlp_install)
+                ytdlpButton.isEnabled = true
+                ytdlpProgress.visibility = android.view.View.GONE
+            }
+            refreshYtDlpRow()
+
+            ytdlpButton.setOnClickListener {
+                if (YtDlpManager.isInstalled(this)) {
+                    YtDlpManager.delete(this)
+                    Toast.makeText(this, "yt-dlp removed", Toast.LENGTH_SHORT).show()
+                    refreshYtDlpRow()
+                } else {
+                    ytdlpButton.isEnabled = false
+                    ytdlpProgress.visibility = android.view.View.VISIBLE
+                    ytdlpStatus.setText(R.string.settings_ytdlp_installing)
+                    lifecycleScope.launch {
+                        val error = withContext(Dispatchers.IO) { YtDlpManager.install(this@MainActivity) }
+                        // Show the exact failure reason instead of a generic message --
+                        // init() only unpacks bundled assets, no network involved, so a
+                        // guessed "check your connection" message would usually be wrong.
+                        Toast.makeText(
+                            this@MainActivity,
+                            error?.let { "Install failed: $it" } ?: "yt-dlp installed",
+                            Toast.LENGTH_LONG
+                        ).show()
+                        refreshYtDlpRow()
+                    }
+                }
+            }
+        }
 
         val idForConnections = mapOf(
             2 to R.id.conn2, 4 to R.id.conn4, 8 to R.id.conn8, 16 to R.id.conn16

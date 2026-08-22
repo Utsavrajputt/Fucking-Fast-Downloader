@@ -17,9 +17,12 @@ import com.invictus.xmd.core.DownloadCategory
 import com.invictus.xmd.core.DownloadEngine
 import com.invictus.xmd.core.ItemStatus
 import com.invictus.xmd.core.LinkParser
+import com.invictus.xmd.core.MediaPlatform
+import com.invictus.xmd.core.QueueItem
 import com.invictus.xmd.core.QueueRepository
 import com.invictus.xmd.core.Settings
 import com.invictus.xmd.core.TorrentEngine
+import com.invictus.xmd.core.YtDlpManager
 import com.invictus.xmd.ui.MainActivity
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.launch
@@ -145,9 +148,15 @@ class DownloadService : LifecycleService() {
                 topUpWorkers()
             }
             ACTION_PAUSE_ITEM -> intent.getStringExtra(EXTRA_ITEM_ID)?.let { id ->
-                engines[id]?.pause()
-                torrentEngines[id]?.pause()
-                QueueRepository.update(id) { it.copy(status = ItemStatus.PAUSED) }
+                // yt-dlp has no native pause -- QueueAdapter already hides the
+                // Pause button for YouTube items, this is just a defensive
+                // no-op in case this action fires for one some other way.
+                val current = QueueRepository.current().firstOrNull { it.id == id }
+                if (current?.platform != MediaPlatform.YOUTUBE) {
+                    engines[id]?.pause()
+                    torrentEngines[id]?.pause()
+                    QueueRepository.update(id) { it.copy(status = ItemStatus.PAUSED) }
+                }
                 updateNotification()
             }
             ACTION_RESUME_ITEM -> intent.getStringExtra(EXTRA_ITEM_ID)?.let { id ->
@@ -157,13 +166,18 @@ class DownloadService : LifecycleService() {
                 updateNotification()
             }
             ACTION_CANCEL_ITEM -> intent.getStringExtra(EXTRA_ITEM_ID)?.let { id ->
-                engines[id]?.cancel()
-                torrentEngines[id]?.cancel()
+                val current = QueueRepository.current().firstOrNull { it.id == id }
+                if (current?.platform == MediaPlatform.YOUTUBE) {
+                    cancelledYoutubeIds.add(id)
+                    YtDlpManager.cancel(id)
+                } else {
+                    engines[id]?.cancel()
+                    torrentEngines[id]?.cancel()
+                }
                 // During an auto-retry backoff wait there's no live engine (it was
                 // removed before the delay), so there's nothing for .cancel() above
                 // to interrupt -- mark it cancelled directly; the retry loop checks
                 // this right after its delay and bails instead of trying again.
-                val current = QueueRepository.current().firstOrNull { it.id == id }
                 if (current?.status == ItemStatus.RETRYING) {
                     QueueRepository.update(id) { it.copy(status = ItemStatus.FAILED, error = "Cancelled") }
                 }
@@ -172,6 +186,12 @@ class DownloadService : LifecycleService() {
             ACTION_CANCEL_ALL -> {
                 engines.values.forEach { it.cancel() }
                 torrentEngines.values.forEach { it.cancel() }
+                QueueRepository.current()
+                    .filter { it.platform == MediaPlatform.YOUTUBE && it.status == ItemStatus.DOWNLOADING }
+                    .forEach {
+                        cancelledYoutubeIds.add(it.id)
+                        YtDlpManager.cancel(it.id)
+                    }
                 QueueRepository.current().filter { it.status == ItemStatus.RETRYING }.forEach { item ->
                     QueueRepository.update(item.id) { it.copy(status = ItemStatus.FAILED, error = "Cancelled") }
                 }
@@ -200,15 +220,93 @@ class DownloadService : LifecycleService() {
         }
     }
 
+    /** Same idea as [engines], for YouTube (yt-dlp) items -- keyed by processId (== item id). */
+    private val cancelledYoutubeIds = java.util.concurrent.ConcurrentHashMap.newKeySet<String>()
+
     private suspend fun worker() {
         while (true) {
             val item = QueueRepository.claimNextReady() ?: break
-            if (LinkParser.isTorrentLink(item.sourceUrl)) {
-                downloadTorrentOne(item.id, item.sourceUrl)
-            } else {
-                downloadOne(item.id, item.sourceUrl, item.directUrl, item.category)
+            when {
+                item.platform == MediaPlatform.YOUTUBE -> downloadYoutube(item)
+                LinkParser.isTorrentLink(item.sourceUrl) -> downloadTorrentOne(item.id, item.sourceUrl)
+                else -> downloadOne(item.id, item.sourceUrl, item.directUrl, item.category)
             }
             kotlinx.coroutines.delay(BETWEEN_CLAIM_DELAY_MS)
+        }
+    }
+
+    // ── YouTube (yt-dlp) download path ──────────────────────────────────
+    /**
+     * No range downloads, no resume-on-crash, no auto-retry loop here --
+     * yt-dlp owns the entire resolve+download+merge process for a YouTube
+     * item, and reports plain 0-100% progress instead of bytes. Kept as its
+     * own function rather than shoehorned into downloadOne() above since
+     * almost nothing (temp-then-move, byte progress, Content-Disposition
+     * probing) actually applies to it. Full-flavor only -- see YtDlpManager.
+     */
+    private suspend fun downloadYoutube(item: QueueItem) {
+        val itemId = item.id
+        val formatSelector = item.mediaFormatSelector
+        val formatLabel = item.mediaFormatLabel
+        if (formatSelector == null || formatLabel == null) {
+            QueueRepository.update(itemId) {
+                it.copy(status = ItemStatus.FAILED, error = "No quality selected")
+            }
+            return
+        }
+        if (!YtDlpManager.isInstalled(this)) {
+            // Shouldn't normally reach here since MainActivity checks this
+            // before ever showing the quality picker -- but guard anyway
+            // (e.g. user deleted it from Settings after the item was queued).
+            QueueRepository.update(itemId) {
+                it.copy(status = ItemStatus.FAILED, error = "yt-dlp not installed — install it from Settings")
+            }
+            return
+        }
+
+        val option = YtDlpManager.QualityOption(
+            label = formatLabel,
+            formatSelector = formatSelector,
+            isAudioOnly = formatSelector == YtDlpManager.AUDIO_ONLY_SELECTOR
+        )
+
+        val outputDir = if (Settings.saveToDownloadsFolder()) {
+            Environment.getExternalStoragePublicDirectory(Environment.DIRECTORY_DOWNLOADS)
+        } else {
+            File(Environment.getExternalStorageDirectory(), "Xmd/${item.category.folderName}")
+        }
+
+        try {
+            val file = withContext(Dispatchers.IO) {
+                YtDlpManager.download(
+                    url = item.sourceUrl,
+                    option = option,
+                    outputDir = outputDir,
+                    processId = itemId,
+                    context = this@DownloadService
+                ) { percent ->
+                    QueueRepository.update(itemId) { it.copy(status = ItemStatus.DOWNLOADING, progressPercent = percent) }
+                    updateNotification()
+                }
+            }
+            QueueRepository.update(itemId) {
+                it.copy(status = ItemStatus.DONE, fileName = file.name, progressPercent = 100)
+            }
+        } catch (e: Throwable) {
+            // Throwable (not just Exception) for the same reason as
+            // YtDlpManager.install() -- the underlying library's native
+            // binary invocation can surface as an Error subtype.
+            val cancelled = cancelledYoutubeIds.remove(itemId)
+            QueueRepository.update(itemId) {
+                it.copy(
+                    status = ItemStatus.FAILED,
+                    error = if (cancelled) "Cancelled" else (e.message ?: "YouTube download failed"),
+                    progressPercent = -1
+                )
+            }
+        } finally {
+            cancelledYoutubeIds.remove(itemId)
+            updateNotification()
         }
     }
 
@@ -440,9 +538,13 @@ class DownloadService : LifecycleService() {
         }
         val resolving = queue.any { it.status == ItemStatus.RESOLVING }
 
-        val totalDone = active.sumOf { it.bytesDone }
-        val totalSize = active.sumOf { it.bytesTotal }
-        val totalSpeed = active.sumOf { it.speedBps }
+        // yt-dlp reports a plain 0-100% instead of bytes -- excluded from the
+        // byte-based sums below (mixing the two would produce meaningless
+        // totals) and handled as its own case in the single-item branch.
+        val byteActive = active.filter { it.platform != MediaPlatform.YOUTUBE }
+        val totalDone = byteActive.sumOf { it.bytesDone }
+        val totalSize = byteActive.sumOf { it.bytesTotal }
+        val totalSpeed = byteActive.sumOf { it.speedBps }
         val percent = if (totalSize > 0) ((totalDone * 100) / totalSize).toInt() else 0
 
         val title: String
@@ -465,23 +567,33 @@ class DownloadService : LifecycleService() {
             relevant.size == 1 -> {
                 val item = relevant.first()
                 title = item.fileName ?: item.sourceUrl
-                text = when (item.status) {
-                    ItemStatus.PAUSED -> "⏸  Paused — " + buildDetailLine(item.bytesDone, item.bytesTotal, 0.0)
-                    ItemStatus.RETRYING -> "🔁  ${item.error ?: "Retrying…"}"
+                text = when {
+                    item.status == ItemStatus.PAUSED -> "⏸  Paused — " + buildDetailLine(item.bytesDone, item.bytesTotal, 0.0)
+                    item.status == ItemStatus.RETRYING -> "🔁  ${item.error ?: "Retrying…"}"
+                    item.platform == MediaPlatform.YOUTUBE ->
+                        (if (item.progressPercent >= 0) "${item.progressPercent}%" else "Resolving…") +
+                            "  •  ${item.mediaFormatLabel ?: "YouTube"}"
                     else -> buildDetailLine(item.bytesDone, item.bytesTotal, item.speedBps)
                 }
-                barPercent = if (item.bytesTotal > 0) ((item.bytesDone * 100) / item.bytesTotal).toInt() else 0
+                barPercent = when {
+                    item.platform == MediaPlatform.YOUTUBE -> item.progressPercent.coerceAtLeast(0)
+                    item.bytesTotal > 0 -> ((item.bytesDone * 100) / item.bytesTotal).toInt()
+                    else -> 0
+                }
             }
             else -> {
                 val pausedCount = relevant.count { it.status == ItemStatus.PAUSED }
+                val ytCount = relevant.count { it.platform == MediaPlatform.YOUTUBE }
                 title = "${relevant.size} files" +
                     if (active.isNotEmpty()) " downloading" else " in queue"
                 text = buildString {
                     append(buildDetailLine(totalDone, totalSize, totalSpeed))
                     if (pausedCount > 0) append("  •  $pausedCount paused")
+                    if (ytCount > 0) append("  •  $ytCount YouTube")
                 }
-                val relevantTotal = relevant.sumOf { it.bytesTotal }
-                val relevantDone = relevant.sumOf { it.bytesDone }
+                val relevantByte = relevant.filter { it.platform != MediaPlatform.YOUTUBE }
+                val relevantTotal = relevantByte.sumOf { it.bytesTotal }
+                val relevantDone = relevantByte.sumOf { it.bytesDone }
                 barPercent = if (relevantTotal > 0) ((relevantDone * 100) / relevantTotal).toInt() else 0
             }
         }
@@ -517,7 +629,9 @@ class DownloadService : LifecycleService() {
                     PendingIntent.FLAG_IMMUTABLE or PendingIntent.FLAG_UPDATE_CURRENT
                 )
                 builder.addAction(0, getString(R.string.action_resume), resumeIntent)
-            } else if (item.status == ItemStatus.DOWNLOADING) {
+            } else if (item.status == ItemStatus.DOWNLOADING && item.platform != MediaPlatform.YOUTUBE) {
+                // yt-dlp has no native pause -- see the QueueAdapter/DownloadService
+                // pause-routing comments elsewhere for the same reasoning.
                 val pauseIntent = PendingIntent.getService(
                     this, 1,
                     Intent(this, DownloadService::class.java)

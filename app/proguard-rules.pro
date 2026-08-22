@@ -24,3 +24,12 @@
 -keep class org.libtorrent4j.** { *; }
 -keep class org.libtorrent4j.swig.** { *; }
 -dontwarn org.libtorrent4j.**
+
+# youtubedl-android/ffmpeg (yt-dlp support, Full flavor only): bundles a
+# python interpreter + native ffmpeg/ffprobe binaries and unpacks/invokes
+# them via reflection-heavy internal plumbing. Same class of bug as
+# libtorrent4j above -- without this keep rule, tapping "Install" in
+# Settings crashes the app the moment YoutubeDL.init()/FFmpeg.init() runs
+# in a release (minified) build, even though it works fine in debug.
+-keep class com.yausername.** { *; }
+-dontwarn com.yausername.**

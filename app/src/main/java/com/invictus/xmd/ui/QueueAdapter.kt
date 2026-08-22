@@ -11,6 +11,7 @@ import androidx.recyclerview.widget.ListAdapter
 import androidx.recyclerview.widget.RecyclerView
 import com.invictus.xmd.R
 import com.invictus.xmd.core.ItemStatus
+import com.invictus.xmd.core.MediaPlatform
 import com.invictus.xmd.core.QueueItem
 
 class QueueAdapter(
@@ -68,8 +69,13 @@ class QueueAdapter(
             ItemStatus.NEEDS_CHALLENGE  -> "🛡 Verifying — complete check in browser"
             ItemStatus.READY            -> "✅ Ready to download"
             ItemStatus.DOWNLOADING      -> {
-                val pct = if (item.bytesTotal > 0) (item.bytesDone * 100 / item.bytesTotal) else 0
-                "⬇  ${if (item.bytesTotal > 0) "$pct%" else "Downloading…"}"
+                if (item.platform == MediaPlatform.YOUTUBE) {
+                    val label = item.mediaFormatLabel?.let { " • $it" }.orEmpty()
+                    "⬇  ${if (item.progressPercent >= 0) "${item.progressPercent}%" else "Downloading…"}$label"
+                } else {
+                    val pct = if (item.bytesTotal > 0) (item.bytesDone * 100 / item.bytesTotal) else 0
+                    "⬇  ${if (item.bytesTotal > 0) "$pct%" else "Downloading…"}"
+                }
             }
             ItemStatus.PAUSED           -> "⏸  Paused"
             ItemStatus.RETRYING         -> "🔁 ${item.error ?: "Retrying…"}"
@@ -109,7 +115,14 @@ class QueueAdapter(
         // ── Progress bar ─────────────────────────────────────────────────
         when (item.status) {
             ItemStatus.DOWNLOADING -> {
-                if (item.bytesTotal > 0) {
+                if (item.platform == MediaPlatform.YOUTUBE) {
+                    if (item.progressPercent >= 0) {
+                        holder.progress.progress = item.progressPercent
+                        holder.progress.visibility = View.VISIBLE
+                    } else {
+                        holder.progress.visibility = View.GONE
+                    }
+                } else if (item.bytesTotal > 0) {
                     holder.progress.progress = ((item.bytesDone * 100) / item.bytesTotal).toInt()
                     holder.progress.visibility = View.VISIBLE
                 } else {
@@ -139,8 +152,12 @@ class QueueAdapter(
         val showActions = item.status == ItemStatus.DOWNLOADING || item.status == ItemStatus.PAUSED ||
             item.status == ItemStatus.RETRYING || item.status == ItemStatus.READY
         holder.actions.visibility = if (showActions) View.VISIBLE else View.GONE
-        // No live connection to pause during an auto-retry backoff wait -- only Cancel applies.
-        holder.pauseResume.visibility = if (item.status == ItemStatus.RETRYING) View.GONE else View.VISIBLE
+        // No live connection to pause during an auto-retry backoff wait -- only Cancel
+        // applies. yt-dlp also has no native pause, so a downloading YouTube item only
+        // gets Cancel too (READY still shows "Start", which works the same for both).
+        val hidePauseResume = item.status == ItemStatus.RETRYING ||
+            (item.platform == MediaPlatform.YOUTUBE && item.status == ItemStatus.DOWNLOADING)
+        holder.pauseResume.visibility = if (hidePauseResume) View.GONE else View.VISIBLE
         holder.pauseResume.text = when (item.status) {
             ItemStatus.READY  -> context.getString(R.string.action_start)
             ItemStatus.PAUSED -> context.getString(R.string.action_resume)
@@ -168,8 +185,13 @@ class QueueAdapter(
      *  on the rest of the row. */
     private fun bindProgressOnly(holder: VH, item: QueueItem) {
         if (item.status == ItemStatus.DOWNLOADING) {
-            val pct = if (item.bytesTotal > 0) (item.bytesDone * 100 / item.bytesTotal) else 0
-            holder.status.text = "⬇  ${if (item.bytesTotal > 0) "$pct%" else "Downloading…"}"
+            if (item.platform == MediaPlatform.YOUTUBE) {
+                val label = item.mediaFormatLabel?.let { " • $it" }.orEmpty()
+                holder.status.text = "⬇  ${if (item.progressPercent >= 0) "${item.progressPercent}%" else "Downloading…"}$label"
+            } else {
+                val pct = if (item.bytesTotal > 0) (item.bytesDone * 100 / item.bytesTotal) else 0
+                holder.status.text = "⬇  ${if (item.bytesTotal > 0) "$pct%" else "Downloading…"}"
+            }
         }
 
         // bytesTotal/bytesDone can go from 0 (unknown, hidden on the initial bind)
@@ -188,7 +210,14 @@ class QueueAdapter(
         }
 
         if (item.status == ItemStatus.DOWNLOADING) {
-            if (item.bytesTotal > 0) {
+            if (item.platform == MediaPlatform.YOUTUBE) {
+                if (item.progressPercent >= 0) {
+                    holder.progress.progress = item.progressPercent
+                    holder.progress.visibility = View.VISIBLE
+                } else {
+                    holder.progress.visibility = View.GONE
+                }
+            } else if (item.bytesTotal > 0) {
                 holder.progress.progress = ((item.bytesDone * 100) / item.bytesTotal).toInt()
                 holder.progress.visibility = View.VISIBLE
             } else {
@@ -256,11 +285,11 @@ class QueueAdapter(
             override fun areContentsTheSame(a: QueueItem, b: QueueItem) = a == b
 
             override fun getChangePayload(a: QueueItem, b: QueueItem): Any? {
-                // If everything except bytesDone/bytesTotal/speedBps is identical,
-                // this is a plain progress tick -- tell the adapter to do a
+                // If everything except bytesDone/bytesTotal/speedBps/progressPercent is
+                // identical, this is a plain progress tick -- tell the adapter to do a
                 // partial (non-animated) rebind instead of a full one.
-                val progressOnly = a.copy(bytesDone = 0L, bytesTotal = 0L, speedBps = 0.0) ==
-                    b.copy(bytesDone = 0L, bytesTotal = 0L, speedBps = 0.0)
+                val progressOnly = a.copy(bytesDone = 0L, bytesTotal = 0L, speedBps = 0.0, progressPercent = -1) ==
+                    b.copy(bytesDone = 0L, bytesTotal = 0L, speedBps = 0.0, progressPercent = -1)
                 return if (progressOnly) PAYLOAD_PROGRESS else null
             }
         }

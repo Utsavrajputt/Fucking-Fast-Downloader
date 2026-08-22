@@ -14,24 +14,70 @@ android {
         targetSdk = 34
         versionCode = 4
         versionName = "1.0.0-beta.1"
+    }
 
-        // Only shipping the arm64 (arm64-v8a) native libs -- see the
-        // libtorrent4j dependency below, which is arm64-only to match.
-        // Cuts APK size vs. bundling all 4 ABIs; means the app won't
-        // install on 32-bit-only (armeabi-v7a) or x86/x86_64 devices —
-        // fine for real phones today (arm64-v8a has been standard since
-        // ~2017), but rules out emulators running an x86_64 image unless
-        // that emulator also supports arm64 system images.
-        ndk {
-            abiFilters += "arm64-v8a"
+    // Two flavors instead of one do-everything APK:
+    //  - lite: no yt-dlp/ffmpeg at all -- everything this app did before
+    //          YouTube support existed (FuckingFast/direct/fitgirl/torrent
+    //          only). Ships both arm64-v8a and armeabi-v7a (libtorrent4j
+    //          has a build for each -- libtorrent4j-android-arm64 and
+    //          libtorrent4j-android-arm -- so there's no reason to leave
+    //          32-bit devices out here), split into 2 separate APKs.
+    //  - full: adds YouTube (yt-dlp) support. The python+ffmpeg binaries
+    //          this needs can't be downloaded at runtime on Android 10+
+    //          (see core/YtDlpManager.kt in the full/ source set for why),
+    //          so this flavor ships them bundled as a separate, larger APK
+    //          instead. youtubedl-android supports armeabi-v7a too, so like
+    //          lite, this splits into 2 separate per-ABI APKs below rather
+    //          than one universal one -- an arm64 device's download never
+    //          carries the armeabi-v7a copy of yt-dlp/ffmpeg/python, or
+    //          vice versa.
+    //
+    // ABI selection lives entirely in the `splits { abi { ... } }` block
+    // below, NOT in ndk.abiFilters -- AGP rejects having both set for the
+    // same ABIs ("Conflicting configuration ... in ndk abiFilters cannot
+    // be present when splits abi filters are set"). Since both flavors
+    // want the same two ABIs here, one shared splits.abi block is enough.
+    flavorDimensions += "engine"
+    productFlavors {
+        create("lite") {
+            dimension = "engine"
+            buildConfigField("boolean", "HAS_YOUTUBE_SUPPORT", "false")
+        }
+        create("full") {
+            dimension = "engine"
+            versionNameSuffix = "-full"
+            buildConfigField("boolean", "HAS_YOUTUBE_SUPPORT", "true")
+        }
+    }
+
+    // Splits each flavor's two ABIs into separate APKs -- Xmd-lite-arm64-v8a
+    // / Xmd-lite-armeabi-v7a / Xmd-full-arm64-v8a / Xmd-full-armeabi-v7a.
+    // isUniversalApk = false: no combined-ABI fallback is built, since every
+    // real device is one or the other and a universal APK would just mean
+    // everyone downloads both ABIs' worth of native libs for nothing.
+    splits {
+        abi {
+            isEnable = true
+            reset()
+            include("armeabi-v7a", "arm64-v8a")
+            isUniversalApk = false
         }
     }
 
     buildTypes {
         release {
-            isMinifyEnabled = true
-            isShrinkResources = true
-            proguardFiles(getDefaultProguardFile("proguard-android-optimize.txt"), "proguard-rules.pro")
+            // Minification/shrinking turned OFF: libtorrent4j and
+            // youtubedl-android/ffmpeg both do heavy reflection/JNI-name
+            // lookups internally, and R8 keeps finding new classes to
+            // strip/rename that break them at runtime (NoClassDefFoundError
+            // etc.) even with targeted -keep rules added after each crash.
+            // APK size cost is small in context -- the native yt-dlp/ffmpeg/
+            // libtorrent4j binaries already dominate the size, not app code
+            // -- and "always works" beats "a few MB smaller, breaks
+            // unpredictably." Revisit only with real on-device testing.
+            isMinifyEnabled = false
+            isShrinkResources = false
             // No signingConfig here on purpose: this build type produces an
             // unsigned APK (app-release-unsigned.apk). Signing is done
             // explicitly with apksigner in .github/workflows/android-build.yml
@@ -49,6 +95,7 @@ android {
     }
     buildFeatures {
         viewBinding = true
+        buildConfig = true
     }
 }
 
@@ -74,8 +121,17 @@ dependencies {
 
     // libtorrent4j: real BitTorrent engine (magnet links + .torrent files) --
     // see core/TorrentEngine.kt. The main artifact is pure-Java bindings;
-    // arm64-only native .so to match the ndk.abiFilters restriction above
-    // (keeps this from adding an extra native lib per other ABI to the APK).
+    // both native .so variants are declared here -- the splits.abi block
+    // above (not ndk.abiFilters, which can't coexist with it) prunes
+    // whichever ABI a given output doesn't need.
     implementation("org.libtorrent4j:libtorrent4j:2.1.0-38")
     implementation("org.libtorrent4j:libtorrent4j-android-arm64:2.1.0-38")
+    implementation("org.libtorrent4j:libtorrent4j-android-arm:2.1.0-38")
+
+    // YouTube (and future yt-dlp-supported sites) downloading -- Android
+    // wrapper around the actual yt-dlp + ffmpeg binaries, on Maven Central.
+    // "full"-flavor only: see the flavor comment above for why this can't
+    // be a runtime download and has to be an opt-in separate APK instead.
+    "fullImplementation"("io.github.junkfood02.youtubedl-android:library:0.18.1")
+    "fullImplementation"("io.github.junkfood02.youtubedl-android:ffmpeg:0.18.1")
 }

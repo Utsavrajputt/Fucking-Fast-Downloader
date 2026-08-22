@@ -20,6 +20,15 @@ object LinkParser {
     private const val DIRECT_HOST = "dl.fuckingfast.co"
     private val FITGIRL_HOSTS = setOf("fitgirl-repacks.site", "www.fitgirl-repacks.site")
 
+    // yt-dlp-backed platforms. Kept as its own set (rather than folding into
+    // isGenericDownloadUrl) since these need the quality-picker flow instead
+    // of a plain resolve -- future platforms (Instagram, Terabox, ...) will
+    // likely get their own similar set + isXLink() check alongside this one.
+    private val YOUTUBE_HOSTS = setOf(
+        "youtube.com", "www.youtube.com", "m.youtube.com",
+        "music.youtube.com", "youtu.be"
+    )
+
     private val FILE_ID_PATTERN = Pattern.compile("[A-Za-z0-9_-]+")
     private val SHARE_LINK_PATTERN = Pattern.compile(
         "https?://(?:www\\.)?fuckingfast\\.co/(?:f/)?[A-Za-z0-9_-]+[^\\s\"'<>]*",
@@ -69,6 +78,7 @@ object LinkParser {
         if (uri.host.isNullOrBlank()) return false
         if (isShareLink(link)) return false
         if (uri.host in FITGIRL_HOSTS) return false
+        if (uri.host in YOUTUBE_HOSTS) return false
         return true
     }
 
@@ -80,6 +90,12 @@ object LinkParser {
     fun isFitgirlPage(link: String): Boolean {
         val uri = runCatching { URI(link.trim()) }.getOrNull() ?: return false
         return uri.host in FITGIRL_HOSTS
+    }
+
+    /** True for a youtube.com/youtu.be video (or music.youtube.com) link -- routed to the yt-dlp quality-picker flow instead of a normal resolve. */
+    fun isYoutubeLink(link: String): Boolean {
+        val uri = runCatching { URI(link.trim()) }.getOrNull() ?: return false
+        return uri.host in YOUTUBE_HOSTS
     }
 
     /** Extracts the file id from a fuckingfast.co share URL, e.g. fuckingfast.co/f/abc123 -> abc123 */

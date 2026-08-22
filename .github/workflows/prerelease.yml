@@ -57,7 +57,7 @@ jobs:
         shell: bash
         run: ./gradlew assembleRelease --stacktrace --no-daemon
 
-      - name: Sign and verify release APK
+      - name: Sign and verify release APKs
         shell: bash
         run: |
           set -euo pipefail
@@ -72,37 +72,50 @@ jobs:
           echo "${{ secrets.KEYSTORE_BASE64 }}" | base64 -d > release.jks
           trap 'rm -f release.jks' EXIT
 
-          unsigned="app/build/outputs/apk/release/app-release-unsigned.apk"
-          signed="app/build/outputs/apk/release/app-release.apk"
+          mkdir -p app/build/outputs/apk/signed
 
-          if [[ ! -f "$unsigned" ]]; then
-            echo "Missing expected unsigned APK: $unsigned"
-            find app/build/outputs/apk -type f -name '*.apk' -print || true
-            exit 1
-          fi
+          # Each flavor (lite = no YouTube, full = adds yt-dlp) splits into
+          # its own arm64-v8a and armeabi-v7a APK -- 4 total, each with only
+          # its own ABI's native libs.
+          declare -A wanted=(
+            [Xmd-lite-arm64-v8a]="app/build/outputs/apk/lite/release/*arm64-v8a*-unsigned.apk"
+            [Xmd-lite-armeabi-v7a]="app/build/outputs/apk/lite/release/*armeabi-v7a*-unsigned.apk"
+            [Xmd-full-arm64-v8a]="app/build/outputs/apk/full/release/*arm64-v8a*-unsigned.apk"
+            [Xmd-full-armeabi-v7a]="app/build/outputs/apk/full/release/*armeabi-v7a*-unsigned.apk"
+          )
 
-          "$apksigner" sign \
-            --ks release.jks \
-            --ks-key-alias "${{ secrets.KEY_ALIAS }}" \
-            --ks-pass "pass:${{ secrets.KEYSTORE_PASSWORD }}" \
-            --key-pass "pass:${{ secrets.KEY_PASSWORD }}" \
-            --out "$signed" \
-            "$unsigned"
-          "$apksigner" verify --verbose "$signed"
-          rm -f "$unsigned"
+          for label in "${!wanted[@]}"; do
+            unsigned=$(compgen -G "${wanted[$label]}" | head -n1 || true)
+            if [[ -z "$unsigned" ]]; then
+              echo "Missing expected unsigned APK for $label (pattern: ${wanted[$label]})"
+              find app/build/outputs/apk -type f -name '*.apk' -print || true
+              exit 1
+            fi
 
-      - name: Stage release asset and checksum
+            signed="app/build/outputs/apk/signed/$label.apk"
+            "$apksigner" sign \
+              --ks release.jks \
+              --ks-key-alias "${{ secrets.KEY_ALIAS }}" \
+              --ks-pass "pass:${{ secrets.KEYSTORE_PASSWORD }}" \
+              --key-pass "pass:${{ secrets.KEY_PASSWORD }}" \
+              --out "$signed" \
+              "$unsigned"
+            "$apksigner" verify --verbose "$signed"
+          done
+
+      - name: Stage release assets and checksums
         shell: bash
         run: |
           set -euo pipefail
           mkdir -p release-assets
           : > checksums.txt
 
-          src="app/build/outputs/apk/release/app-release.apk"
-          dst="release-assets/Xmd-${VERSION_TAG}.apk"
-          test -f "$src"
-          cp "$src" "$dst"
-          sha256sum "$dst" | tee -a checksums.txt
+          for src in app/build/outputs/apk/signed/*.apk; do
+            label="$(basename "$src" .apk)"
+            dst="release-assets/${label}-${VERSION_TAG}.apk"
+            cp "$src" "$dst"
+            sha256sum "$dst" | tee -a checksums.txt
+          done
 
       - name: Prepare release notes
         shell: bash

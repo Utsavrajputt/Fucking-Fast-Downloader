@@ -46,60 +46,101 @@ jobs:
         shell: bash
         run: ./gradlew assembleRelease --stacktrace --no-daemon
 
-      - name: Sign release APK
+      - name: Sign release APKs
         shell: bash
         run: |
           set -euo pipefail
           apksigner="$ANDROID_HOME/build-tools/34.0.0/apksigner"
           test -x "$apksigner"
 
-          if [[ -z "${{ secrets.KEYSTORE_BASE64 }}" ]]; then
-            echo "KEYSTORE_BASE64 is not set (expected for fork PRs); leaving APK unsigned."
-            exit 0
-          fi
+          mkdir -p app/build/outputs/apk/signed
 
-          if [[ -z "${{ secrets.KEY_ALIAS }}" || -z "${{ secrets.KEYSTORE_PASSWORD }}" || -z "${{ secrets.KEY_PASSWORD }}" ]]; then
-            echo "KEYSTORE_BASE64 is set but KEY_ALIAS / KEYSTORE_PASSWORD / KEY_PASSWORD are missing."
-            exit 1
-          fi
+          # Each flavor (lite = no YouTube, full = adds yt-dlp) splits into
+          # its own arm64-v8a and armeabi-v7a APK -- 4 total. Each contains
+          # only its own ABI's native libs (yt-dlp/ffmpeg/python for full,
+          # libtorrent4j for both) -- never both ABIs' worth in one file.
+          declare -A wanted=(
+            [Xmd-lite-arm64-v8a]="app/build/outputs/apk/lite/release/*arm64-v8a*-unsigned.apk"
+            [Xmd-lite-armeabi-v7a]="app/build/outputs/apk/lite/release/*armeabi-v7a*-unsigned.apk"
+            [Xmd-full-arm64-v8a]="app/build/outputs/apk/full/release/*arm64-v8a*-unsigned.apk"
+            [Xmd-full-armeabi-v7a]="app/build/outputs/apk/full/release/*armeabi-v7a*-unsigned.apk"
+          )
 
-          echo "${{ secrets.KEYSTORE_BASE64 }}" | base64 -d > release.jks
-          trap 'rm -f release.jks' EXIT
+          for label in "${!wanted[@]}"; do
+            unsigned=$(compgen -G "${wanted[$label]}" | head -n1 || true)
+            if [[ -z "$unsigned" ]]; then
+              echo "Missing expected unsigned APK for $label (pattern: ${wanted[$label]})"
+              find app/build/outputs/apk -type f -name '*.apk' -print || true
+              exit 1
+            fi
 
-          unsigned="app/build/outputs/apk/release/app-release-unsigned.apk"
-          signed="app/build/outputs/apk/release/app-release.apk"
+            if [[ -z "${{ secrets.KEYSTORE_BASE64 }}" ]]; then
+              echo "KEYSTORE_BASE64 is not set (expected for fork PRs); leaving $label unsigned."
+              cp "$unsigned" "app/build/outputs/apk/signed/$label-unsigned.apk"
+              continue
+            fi
 
-          if [[ ! -f "$unsigned" ]]; then
-            echo "Missing expected unsigned APK: $unsigned"
-            find app/build/outputs/apk -type f -name '*.apk' -print || true
-            exit 1
-          fi
+            if [[ -z "${{ secrets.KEY_ALIAS }}" || -z "${{ secrets.KEYSTORE_PASSWORD }}" || -z "${{ secrets.KEY_PASSWORD }}" ]]; then
+              echo "KEYSTORE_BASE64 is set but KEY_ALIAS / KEYSTORE_PASSWORD / KEY_PASSWORD are missing."
+              exit 1
+            fi
 
-          "$apksigner" sign \
-            --ks release.jks \
-            --ks-key-alias "${{ secrets.KEY_ALIAS }}" \
-            --ks-pass "pass:${{ secrets.KEYSTORE_PASSWORD }}" \
-            --key-pass "pass:${{ secrets.KEY_PASSWORD }}" \
-            --out "$signed" \
-            "$unsigned"
-          rm -f "$unsigned"
+            echo "${{ secrets.KEYSTORE_BASE64 }}" | base64 -d > release.jks
 
-      - name: Verify APK signature
+            "$apksigner" sign \
+              --ks release.jks \
+              --ks-key-alias "${{ secrets.KEY_ALIAS }}" \
+              --ks-pass "pass:${{ secrets.KEYSTORE_PASSWORD }}" \
+              --key-pass "pass:${{ secrets.KEY_PASSWORD }}" \
+              --out "app/build/outputs/apk/signed/$label.apk" \
+              "$unsigned"
+            rm -f release.jks
+          done
+
+      - name: Verify APK signatures
         shell: bash
         run: |
           set -euo pipefail
           apksigner="$ANDROID_HOME/build-tools/34.0.0/apksigner"
-          apk="app/build/outputs/apk/release/app-release.apk"
-          if [[ -f "$apk" ]]; then
-            "$apksigner" verify --verbose --print-certs "$apk"
+          shopt -s nullglob
+          signed=(app/build/outputs/apk/signed/*.apk)
+          if [[ ${#signed[@]} -eq 0 ]]; then
+            echo "No signed APKs found -- skipping verification (unsigned build)."
           else
-            echo "No signed APK found -- skipping verification (unsigned build)."
+            for apk in "${signed[@]}"; do
+              [[ "$apk" == *-unsigned.apk ]] && continue
+              "$apksigner" verify --verbose --print-certs "$apk"
+            done
           fi
 
-      - name: Upload release APK
+      - name: Upload Xmd-lite-arm64-v8a
         uses: actions/upload-artifact@v4
         with:
-          name: Xmd-release-${{ env.SHORT_SHA }}
-          path: app/build/outputs/apk/release/*.apk
+          name: Xmd-lite-arm64-v8a-${{ env.SHORT_SHA }}
+          path: app/build/outputs/apk/signed/Xmd-lite-arm64-v8a*.apk
+          if-no-files-found: error
+          retention-days: 14
+
+      - name: Upload Xmd-lite-armeabi-v7a
+        uses: actions/upload-artifact@v4
+        with:
+          name: Xmd-lite-armeabi-v7a-${{ env.SHORT_SHA }}
+          path: app/build/outputs/apk/signed/Xmd-lite-armeabi-v7a*.apk
+          if-no-files-found: error
+          retention-days: 14
+
+      - name: Upload Xmd-full-arm64-v8a
+        uses: actions/upload-artifact@v4
+        with:
+          name: Xmd-full-arm64-v8a-${{ env.SHORT_SHA }}
+          path: app/build/outputs/apk/signed/Xmd-full-arm64-v8a*.apk
+          if-no-files-found: error
+          retention-days: 14
+
+      - name: Upload Xmd-full-armeabi-v7a
+        uses: actions/upload-artifact@v4
+        with:
+          name: Xmd-full-armeabi-v7a-${{ env.SHORT_SHA }}
+          path: app/build/outputs/apk/signed/Xmd-full-armeabi-v7a*.apk
           if-no-files-found: error
           retention-days: 14

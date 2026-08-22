@@ -132,7 +132,7 @@ class HomeFragment : Fragment() {
         val text = clip.getItemAt(0).coerceToText(requireContext())
             ?.toString()?.trim().orEmpty()
         if (text.isEmpty() || text == lastHandledClipboardText) return
-        if (!LinkParser.isShareLink(text) && !LinkParser.isFitgirlPage(text)) return
+        if (!LinkParser.isShareLink(text) && !LinkParser.isFitgirlPage(text) && !LinkParser.isYoutubeLink(text)) return
         if (linksInput.text?.toString()?.contains(text) == true) return
         if (QueueRepository.current().any { it.sourceUrl == text }) return
 
@@ -162,7 +162,7 @@ class HomeFragment : Fragment() {
     private fun updateButtonState() {
         val lines = currentInputLines()
         val needsPrepare = lines.isEmpty() || lines.any {
-            LinkParser.isShareLink(it) || LinkParser.isFitgirlPage(it)
+            LinkParser.isShareLink(it) || LinkParser.isFitgirlPage(it) || LinkParser.isYoutubeLink(it)
         }
         view?.findViewById<View>(R.id.prepareButton)?.visibility =
             if (needsPrepare) View.VISIBLE else View.GONE

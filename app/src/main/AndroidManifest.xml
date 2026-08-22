@@ -25,7 +25,9 @@
         android:roundIcon="@mipmap/xmd"
         android:label="@string/app_name"
         android:theme="@style/Theme.Xmd"
-        android:usesCleartextTraffic="false">
+        android:usesCleartextTraffic="false"
+        android:extractNativeLibs="true"
+        android:requestLegacyExternalStorage="true">
 
         <activity
             android:name=".ui.MainActivity"
