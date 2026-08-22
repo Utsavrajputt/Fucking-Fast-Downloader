@@ -97,7 +97,7 @@
 
         <!-- Lets DownloadsFragment's "Open" button hand a completed file to
              an external app via a content:// URI instead of a raw file://
-             one -- required on Android 7+ (FileUriExposedException) and the
+             one, required on Android 7+ (FileUriExposedException) and the
              only way to grant a specific other app temporary read access to
              a file under our own external storage path. -->
         <provider
