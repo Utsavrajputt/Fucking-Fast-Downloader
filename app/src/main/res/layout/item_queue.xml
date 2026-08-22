@@ -139,7 +139,7 @@
                     android:text="@string/action_cancel" />
             </LinearLayout>
 
-            <!-- Retry + Clear — shown for FAILED (both) and DONE (Clear only) -->
+            <!-- Retry + Open + Clear — Retry: FAILED only. Open: DONE only. Clear: FAILED/DONE/READY -->
             <LinearLayout
                 android:id="@+id/itemSecondaryActions"
                 android:layout_width="match_parent"
@@ -161,6 +161,20 @@
                     android:textSize="13sp"
                     android:textStyle="bold"
                     android:text="@string/action_retry" />
+
+                <Button
+                    android:id="@+id/itemOpen"
+                    style="?android:attr/borderlessButtonStyle"
+                    android:layout_width="wrap_content"
+                    android:layout_height="wrap_content"
+                    android:minWidth="0dp"
+                    android:minHeight="0dp"
+                    android:paddingHorizontal="0dp"
+                    android:layout_marginEnd="24dp"
+                    android:textColor="@color/ff_accent"
+                    android:textSize="13sp"
+                    android:textStyle="bold"
+                    android:text="@string/action_open" />
 
                 <Button
                     android:id="@+id/itemClear"

@@ -23,6 +23,9 @@
     <string name="action_start">Start</string>
     <string name="action_cancel">Cancel</string>
     <string name="action_retry">Retry</string>
+    <string name="action_open">Open</string>
+    <string name="open_file_missing">File not found — it may have been moved or deleted.</string>
+    <string name="open_file_no_app">No app found that can open this file.</string>
     <string name="action_clear">Clear</string>
     <string name="action_retry_all">Retry All</string>
     <string name="action_clear_all">Clear All</string>

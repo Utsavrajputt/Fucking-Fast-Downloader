@@ -284,13 +284,25 @@ class DownloadService : LifecycleService() {
                     outputDir = outputDir,
                     processId = itemId,
                     context = this@DownloadService
-                ) { percent ->
-                    QueueRepository.update(itemId) { it.copy(status = ItemStatus.DOWNLOADING, progressPercent = percent) }
+                ) { progress ->
+                    QueueRepository.update(itemId) {
+                        it.copy(
+                            status = ItemStatus.DOWNLOADING,
+                            progressPercent = progress.percent,
+                            mediaStatusText = progress.statusText
+                        )
+                    }
                     updateNotification()
                 }
             }
             QueueRepository.update(itemId) {
-                it.copy(status = ItemStatus.DONE, fileName = file.name, progressPercent = 100)
+                it.copy(
+                    status = ItemStatus.DONE,
+                    fileName = file.name,
+                    filePath = file.absolutePath,
+                    progressPercent = 100,
+                    mediaStatusText = null
+                )
             }
         } catch (e: Throwable) {
             // Throwable (not just Exception) for the same reason as
@@ -301,7 +313,8 @@ class DownloadService : LifecycleService() {
                 it.copy(
                     status = ItemStatus.FAILED,
                     error = if (cancelled) "Cancelled" else (e.message ?: "YouTube download failed"),
-                    progressPercent = -1
+                    progressPercent = -1,
+                    mediaStatusText = null
                 )
             }
         } finally {
@@ -362,7 +375,20 @@ class DownloadService : LifecycleService() {
             }
 
             QueueRepository.update(itemId) {
-                it.copy(fileName = result.name, status = ItemStatus.DONE)
+                it.copy(
+                    fileName = result.name,
+                    // Single-file torrent: point straight at the file so
+                    // "Open" can hand it to an external app. Multi-file
+                    // torrents don't have one sensible "the file" to open --
+                    // filePath is left null and QueueAdapter hides Open for
+                    // those (see the numFiles check on the DONE branch there
+                    // isn't one currently, so this just means no usable path
+                    // was ever captured -- same effect).
+                    filePath = if (result.numFiles == 1) {
+                        File(result.saveDir, result.name).absolutePath
+                    } else null,
+                    status = ItemStatus.DONE
+                )
             }
         } catch (e: DownloadCancelledException) {
             QueueRepository.update(itemId) { it.copy(status = ItemStatus.FAILED, error = "Cancelled") }
@@ -447,7 +473,7 @@ class DownloadService : LifecycleService() {
                 withContext(Dispatchers.IO) { moveToPublicStorage(tempFile, finalFile) }
                 destinationFile = finalFile
 
-                QueueRepository.update(itemId) { it.copy(status = ItemStatus.DONE) }
+                QueueRepository.update(itemId) { it.copy(status = ItemStatus.DONE, filePath = finalFile.absolutePath) }
                 return
             } catch (e: DownloadCancelledException) {
                 destinationFile?.delete()
@@ -572,7 +598,7 @@ class DownloadService : LifecycleService() {
                     item.status == ItemStatus.RETRYING -> "🔁  ${item.error ?: "Retrying…"}"
                     item.platform == MediaPlatform.YOUTUBE ->
                         (if (item.progressPercent >= 0) "${item.progressPercent}%" else "Resolving…") +
-                            "  •  ${item.mediaFormatLabel ?: "YouTube"}"
+                            "  •  " + (item.mediaStatusText ?: item.mediaFormatLabel ?: "YouTube")
                     else -> buildDetailLine(item.bytesDone, item.bytesTotal, item.speedBps)
                 }
                 barPercent = when {

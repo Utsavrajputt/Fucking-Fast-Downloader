@@ -160,6 +160,78 @@ object YtDlpManager {
 
     fun isReady(): Boolean = initialized
 
+    /** One progress tick, parsed from yt-dlp's own stdout rather than trusting the library's percent-only callback alone (see parseProgressLine). */
+    data class DownloadProgress(
+        val percent: Int,
+        /** e.g. "12.4MiB/s, ETA 00:32" -- null once nothing matches (postprocessing stages: merging, extracting audio, embedding thumbnail, etc). */
+        val statusText: String?
+    )
+
+    // Matches yt-dlp's standard download-progress line, e.g.:
+    // "[download]  42.5% of   10.32MiB at    1.21MiB/s ETA 00:07"
+    // "[download] 100% of 3.45MiB in 00:02"
+    // Percent is always present when this matches; size/speed/eta are each
+    // optional since yt-dlp omits speed+ETA on the final "100% ... in ..." line.
+    private val DOWNLOAD_LINE = Regex(
+        """\[download]\s+([\d.]+)%(?:\s+of\s+~?\s*([\d.]+\s*\w*i?B))?(?:\s+at\s+([\d.]+\s*\w*i?B/s))?(?:\s+ETA\s+(\S+))?"""
+    )
+
+    // Postprocessing stage markers -- these lines have no percentage at all,
+    // so they only feed statusText (percent stays at whatever it last was).
+    private val STAGE_LINE = Regex("""^\[(Merger|ExtractAudio|Metadata|EmbedThumbnail|ThumbnailsConvertor|VideoConvertor)]\s*(.*)$""")
+
+    /**
+     * Parses one line of yt-dlp's stdout into a [DownloadProgress], or null
+     * if the line has nothing progress-related in it (most lines don't --
+     * yt-dlp prints a lot of [info]/[youtube] noise per run).
+     *
+     * This exists because youtubedl-android's own progress callback only
+     * reliably fires during the raw download phase -- once yt-dlp moves into
+     * postprocessing (merging video+audio, extracting/converting audio,
+     * embedding the thumbnail, writing metadata), the library's regex
+     * doesn't recognize those lines as progress at all, so relying on it
+     * alone leaves the UI stuck showing stale/no percentage for however long
+     * that phase takes. Parsing the raw line ourselves means every stage
+     * shows *something* instead of a frozen "Downloading…".
+     */
+    private fun parseProgressLine(line: String, lastPercent: Int): DownloadProgress? {
+        DOWNLOAD_LINE.find(line)?.let { m ->
+            val percent = m.groupValues[1].toFloatOrNull()?.toInt()?.coerceIn(0, 100) ?: lastPercent
+            val size = m.groupValues[2].trim()
+            val speed = m.groupValues[3].trim()
+            val eta = m.groupValues[4].trim()
+            val status = buildString {
+                if (speed.isNotEmpty()) append(speed)
+                if (size.isNotEmpty()) {
+                    if (isNotEmpty()) append(" · ")
+                    append(size)
+                }
+                if (eta.isNotEmpty() && eta != "Unknown") {
+                    if (isNotEmpty()) append(" · ")
+                    append("ETA $eta")
+                }
+            }.ifEmpty { null }
+            return DownloadProgress(percent, status)
+        }
+        STAGE_LINE.find(line)?.let { m ->
+            val stageLabel = when (m.groupValues[1]) {
+                "Merger" -> "Merging video + audio…"
+                "ExtractAudio" -> "Extracting audio…"
+                "ThumbnailsConvertor" -> "Converting thumbnail…"
+                "EmbedThumbnail" -> "Embedding thumbnail…"
+                "Metadata" -> "Writing metadata…"
+                "VideoConvertor" -> "Converting video…"
+                else -> null
+            }
+            // Keep the last known download percent through postprocessing --
+            // it's already effectively "done" downloading at this point, and
+            // jumping back to an unknown/lower percent would look like a
+            // regression to the user.
+            return DownloadProgress(lastPercent.coerceAtLeast(0), stageLabel)
+        }
+        return null
+    }
+
     /**
      * Downloads (and, for merged qualities, muxes) the given YouTube URL
      * straight into [outputDir] using yt-dlp's own output template, so
@@ -167,7 +239,10 @@ object YtDlpManager {
      * already writes/renames atomically itself.
      *
      * [processId] lets [cancel] target this specific download later.
-     * [onProgress] receives yt-dlp's own 0-100 percentage.
+     * [onProgress] receives a percent + human-readable status parsed from
+     * yt-dlp's own stdout (see [parseProgressLine]) -- more reliable across
+     * the whole download+postprocess run than the library's bare percent
+     * callback, which goes quiet during postprocessing stages.
      *
      * Returns the final downloaded file, discovered via yt-dlp's
      * `--print after_move:filepath`, which prints the exact on-disk path
@@ -182,7 +257,7 @@ object YtDlpManager {
         outputDir: File,
         processId: String,
         context: Context,
-        onProgress: (percent: Int) -> Unit
+        onProgress: (DownloadProgress) -> Unit
     ): File {
         if (!ensureReady(context)) throw IllegalStateException("yt-dlp not installed")
         outputDir.mkdirs()
@@ -191,6 +266,7 @@ object YtDlpManager {
         request.addOption("-o", File(outputDir, "%(title).200B [%(id)s].%(ext)s").absolutePath)
         request.addOption("--no-mtime")
         request.addOption("--no-playlist")
+        request.addOption("--newline")
         request.addOption("--print", "after_move:filepath")
 
         if (option.isAudioOnly) {
@@ -225,10 +301,22 @@ object YtDlpManager {
             request.addOption("--embed-metadata")
         }
 
+        var lastPercent = 0
         // Correct signature: execute(request, processId, callback) with
         // callback = (progress: Float, etaInSeconds: Long, line: String) -> Unit.
-        val response = YoutubeDL.getInstance().execute(request, processId) { progress, _, _ ->
-            onProgress(progress.toInt().coerceIn(0, 100))
+        // The library's own `progress` float is used only as a last-resort
+        // fallback (it can be -1/stale during postprocessing) -- the raw
+        // `line` is what actually drives percent+status via parseProgressLine.
+        val response = YoutubeDL.getInstance().execute(request, processId) { progress, _, line ->
+            val parsed = parseProgressLine(line, lastPercent)
+            if (parsed != null) {
+                lastPercent = parsed.percent
+                onProgress(parsed)
+            } else if (progress >= 0f) {
+                val fallbackPercent = progress.toInt().coerceIn(0, 100)
+                lastPercent = fallbackPercent
+                onProgress(DownloadProgress(fallbackPercent, null))
+            }
         }
 
         val printedPath = response.out

@@ -1,0 +1,15 @@
+<?xml version="1.0" encoding="utf-8"?>
+<paths xmlns:android="http://schemas.android.com/apk/res-android">
+    <!-- Covers Environment.getExternalStorageDirectory()/Xmd/<Category> --
+         the app's own default save location (DownloadService.kt) when
+         Settings.saveToDownloadsFolder() is off. -->
+    <external-path name="xmd_files" path="Xmd/" />
+
+    <!-- Covers Environment.DIRECTORY_DOWNLOADS when
+         Settings.saveToDownloadsFolder() is on. -->
+    <external-path name="downloads" path="Download/" />
+
+    <!-- Torrent temp/staging paths under app-private storage, just in case
+         a completed item's fileName ever resolves under here instead. -->
+    <cache-path name="xmd_cache" path="." />
+</paths>

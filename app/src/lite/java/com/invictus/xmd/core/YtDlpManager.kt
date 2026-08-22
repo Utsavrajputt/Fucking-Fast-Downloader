@@ -34,13 +34,18 @@ object YtDlpManager {
 
     fun isReady(): Boolean = false
 
+    data class DownloadProgress(
+        val percent: Int,
+        val statusText: String?
+    )
+
     fun download(
         url: String,
         option: QualityOption,
         outputDir: File,
         processId: String,
         context: Context,
-        onProgress: (percent: Int) -> Unit
+        onProgress: (DownloadProgress) -> Unit
     ): File = throw IllegalStateException("This build doesn't include YouTube support")
 
     fun cancel(processId: String) {}

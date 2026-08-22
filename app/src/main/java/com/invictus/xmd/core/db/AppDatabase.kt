@@ -11,7 +11,7 @@ import com.invictus.xmd.core.Bookmark
 import com.invictus.xmd.core.HistoryEntry
 import com.invictus.xmd.core.QueueItem
 
-@Database(entities = [QueueItem::class, Bookmark::class, HistoryEntry::class], version = 4, exportSchema = false)
+@Database(entities = [QueueItem::class, Bookmark::class, HistoryEntry::class], version = 6, exportSchema = false)
 @TypeConverters(Converters::class)
 abstract class AppDatabase : RoomDatabase() {
 
@@ -71,6 +71,26 @@ abstract class AppDatabase : RoomDatabase() {
             }
         }
 
+        // v4 -> v5: adds mediaStatusText to queue_items -- speed/ETA/size for
+        // the current yt-dlp stage, parsed from its raw stdout line (see
+        // Models.kt for why this can't come from the library's own callback
+        // alone during postprocessing stages).
+        private val MIGRATION_4_5 = object : Migration(4, 5) {
+            override fun migrate(db: SupportSQLiteDatabase) {
+                db.execSQL("ALTER TABLE queue_items ADD COLUMN mediaStatusText TEXT")
+            }
+        }
+
+        // v5 -> v6: adds filePath to queue_items -- the real absolute path a
+        // completed download was written to, captured directly at DONE time
+        // instead of reconstructed later (see Models.kt for why). Powers the
+        // "Open" action in DownloadsFragment.
+        private val MIGRATION_5_6 = object : Migration(5, 6) {
+            override fun migrate(db: SupportSQLiteDatabase) {
+                db.execSQL("ALTER TABLE queue_items ADD COLUMN filePath TEXT")
+            }
+        }
+
         fun get(context: Context): AppDatabase =
             instance ?: synchronized(this) {
                 instance ?: Room.databaseBuilder(
@@ -78,7 +98,7 @@ abstract class AppDatabase : RoomDatabase() {
                     AppDatabase::class.java,
                     "ff_queue.db"
                 )
-                    .addMigrations(MIGRATION_1_2, MIGRATION_2_3, MIGRATION_3_4)
+                    .addMigrations(MIGRATION_1_2, MIGRATION_2_3, MIGRATION_3_4, MIGRATION_4_5, MIGRATION_5_6)
                     // Safety net only for schema drift beyond the explicit
                     // migrations above (shouldn't trigger in practice).
                     .fallbackToDestructiveMigration()

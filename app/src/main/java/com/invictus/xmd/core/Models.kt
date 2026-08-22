@@ -69,6 +69,17 @@ data class QueueItem(
     var directUrl: String? = null,
     var status: ItemStatus = ItemStatus.PENDING,
     var fileName: String? = null,
+    /**
+     * Absolute on-disk path, set only once [status] reaches DONE -- used by
+     * the "Open" action to hand the file to an external app via
+     * FileProvider. Reconstructing this from category/fileName/settings at
+     * open-time would be fragile (three different download paths compute
+     * their own base dir -- see DownloadService's downloadOne/
+     * downloadTorrentOne/downloadYoutube -- and Settings.
+     * saveToDownloadsFolder() could change between download and open), so
+     * it's captured directly from the actual File the download wrote.
+     */
+    var filePath: String? = null,
     var error: String? = null,
     var bytesDone: Long = 0L,
     var bytesTotal: Long = 0L,
@@ -86,7 +97,18 @@ data class QueueItem(
      * yt-dlp reports progress as a 0-100 percentage, not bytes -- -1 means
      * "not applicable, use bytesDone/bytesTotal instead" (the DIRECT path).
      */
-    var progressPercent: Int = -1
+    var progressPercent: Int = -1,
+    /**
+     * Speed/ETA/size for the current yt-dlp stage, parsed directly from its
+     * stdout line (e.g. "12.4MiB/s, ETA 00:32") -- youtubedl-android's own
+     * progress callback only reports a bare percentage during postprocessing
+     * stages (audio extract, thumbnail embed, metadata write), so this is
+     * filled in by our own regex over the raw line instead of relying on the
+     * library for anything beyond the percent. Null when there's nothing
+     * parseable yet (right after the download starts) or not applicable
+     * (DIRECT path, which already has its own speed via speedBps).
+     */
+    var mediaStatusText: String? = null
 )
 
 class ResolutionError(message: String) : Exception(message)

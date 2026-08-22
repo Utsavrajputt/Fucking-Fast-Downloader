@@ -18,7 +18,8 @@ class QueueAdapter(
     private val onPauseResume: (QueueItem) -> Unit,
     private val onCancel: (QueueItem) -> Unit,
     private val onRetry: (QueueItem) -> Unit,
-    private val onClear: (QueueItem) -> Unit
+    private val onClear: (QueueItem) -> Unit,
+    private val onOpen: (QueueItem) -> Unit
 ) : ListAdapter<QueueItem, QueueAdapter.VH>(DIFF) {
 
     class VH(view: View) : RecyclerView.ViewHolder(view) {
@@ -34,6 +35,7 @@ class QueueAdapter(
         val cancel: Button       = view.findViewById(R.id.itemCancel)
         val secondaryActions: View = view.findViewById(R.id.itemSecondaryActions)
         val retry: Button        = view.findViewById(R.id.itemRetry)
+        val open: Button         = view.findViewById(R.id.itemOpen)
         val clear: Button        = view.findViewById(R.id.itemClear)
     }
 
@@ -76,18 +78,25 @@ class QueueAdapter(
                     val pct = if (item.bytesTotal > 0) (item.bytesDone * 100 / item.bytesTotal) else 0
                     "⬇  ${if (item.bytesTotal > 0) "$pct%" else "Downloading…"}"
                 }
-            }
-            ItemStatus.PAUSED           -> "⏸  Paused"
+            }            ItemStatus.PAUSED           -> "⏸  Paused"
             ItemStatus.RETRYING         -> "🔁 ${item.error ?: "Retrying…"}"
             ItemStatus.SAVING           -> "💾 Saving to storage…"
             ItemStatus.DONE             -> "✔  Done"
             ItemStatus.FAILED           -> "✖  ${item.error ?: "Failed"}"
         }
 
-        // ── Size line (MB done / total MB) ────────────────────────────────
+        // ── Size line (MB done / total MB for DIRECT; speed/size/ETA text for YouTube) ──
         when (item.status) {
             ItemStatus.DOWNLOADING, ItemStatus.PAUSED, ItemStatus.SAVING, ItemStatus.RETRYING -> {
                 when {
+                    item.platform == MediaPlatform.YOUTUBE -> {
+                        if (item.mediaStatusText != null) {
+                            holder.sizeText.text = item.mediaStatusText
+                            holder.sizeText.visibility = View.VISIBLE
+                        } else {
+                            holder.sizeText.visibility = View.GONE
+                        }
+                    }
                     item.bytesTotal > 0 -> {
                         holder.sizeText.text =
                             "${formatBytes(item.bytesDone)} / ${formatBytes(item.bytesTotal)}"
@@ -171,12 +180,14 @@ class QueueAdapter(
         holder.cancel.visibility = if (item.status == ItemStatus.READY) View.GONE else View.VISIBLE
         holder.cancel.setOnClickListener { onCancel(item) }
 
-        // ── Retry / Clear (FAILED gets both, DONE/READY get Clear only) ────
+        // ── Retry / Open / Clear (FAILED gets Retry, DONE gets Open, all three get Clear) ──
         val showSecondary = item.status == ItemStatus.FAILED || item.status == ItemStatus.DONE ||
             item.status == ItemStatus.READY
         holder.secondaryActions.visibility = if (showSecondary) View.VISIBLE else View.GONE
         holder.retry.visibility = if (item.status == ItemStatus.FAILED) View.VISIBLE else View.GONE
         holder.retry.setOnClickListener { onRetry(item) }
+        holder.open.visibility = if (item.status == ItemStatus.DONE && item.filePath != null) View.VISIBLE else View.GONE
+        holder.open.setOnClickListener { onOpen(item) }
         holder.clear.setOnClickListener { onClear(item) }
     }
 
@@ -197,7 +208,18 @@ class QueueAdapter(
         // bytesTotal/bytesDone can go from 0 (unknown, hidden on the initial bind)
         // to a real value on the very first progress tick -- so visibility must be
         // (re)applied here too, not just the text, or the size line stays stuck GONE.
+        // YouTube items never populate bytesTotal/bytesDone at all (percent-based,
+        // not byte-based) -- branch on platform the same way the full bind does,
+        // or this would always fall through to the `else -> GONE` case for them.
         when {
+            item.platform == MediaPlatform.YOUTUBE -> {
+                if (item.mediaStatusText != null) {
+                    holder.sizeText.text = item.mediaStatusText
+                    holder.sizeText.visibility = View.VISIBLE
+                } else {
+                    holder.sizeText.visibility = View.GONE
+                }
+            }
             item.bytesTotal > 0 -> {
                 holder.sizeText.text = "${formatBytes(item.bytesDone)} / ${formatBytes(item.bytesTotal)}"
                 holder.sizeText.visibility = View.VISIBLE
@@ -285,11 +307,11 @@ class QueueAdapter(
             override fun areContentsTheSame(a: QueueItem, b: QueueItem) = a == b
 
             override fun getChangePayload(a: QueueItem, b: QueueItem): Any? {
-                // If everything except bytesDone/bytesTotal/speedBps/progressPercent is
-                // identical, this is a plain progress tick -- tell the adapter to do a
-                // partial (non-animated) rebind instead of a full one.
-                val progressOnly = a.copy(bytesDone = 0L, bytesTotal = 0L, speedBps = 0.0, progressPercent = -1) ==
-                    b.copy(bytesDone = 0L, bytesTotal = 0L, speedBps = 0.0, progressPercent = -1)
+                // If everything except bytesDone/bytesTotal/speedBps/progressPercent/
+                // mediaStatusText is identical, this is a plain progress tick -- tell
+                // the adapter to do a partial (non-animated) rebind instead of a full one.
+                val progressOnly = a.copy(bytesDone = 0L, bytesTotal = 0L, speedBps = 0.0, progressPercent = -1, mediaStatusText = null) ==
+                    b.copy(bytesDone = 0L, bytesTotal = 0L, speedBps = 0.0, progressPercent = -1, mediaStatusText = null)
                 return if (progressOnly) PAYLOAD_PROGRESS else null
             }
         }
