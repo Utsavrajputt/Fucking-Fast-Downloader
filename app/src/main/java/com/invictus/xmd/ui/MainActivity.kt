@@ -840,6 +840,8 @@ class MainActivity : AppCompatActivity(), HomeFragment.Callbacks, DownloadsFragm
         val ytdlpStatus     = view.findViewById<android.widget.TextView>(R.id.ytdlpStatus)
         val ytdlpProgress   = view.findViewById<android.widget.ProgressBar>(R.id.ytdlpProgress)
         val ytdlpButton     = view.findViewById<android.widget.Button>(R.id.ytdlpActionButton)
+        val ytdlpUpdateButton  = view.findViewById<android.widget.Button>(R.id.ytdlpUpdateButton)
+        val ytdlpNightlyButton = view.findViewById<android.widget.Button>(R.id.ytdlpNightlyButton)
 
         if (!BuildConfig.HAS_YOUTUBE_SUPPORT) {
             // Lite build has no YtDlpManager to back this section with --
@@ -849,9 +851,29 @@ class MainActivity : AppCompatActivity(), HomeFragment.Callbacks, DownloadsFragm
         } else {
             fun refreshYtDlpRow() {
                 val installed = YtDlpManager.isInstalled(this)
-                ytdlpStatus.setText(if (installed) R.string.settings_ytdlp_status_installed else R.string.settings_ytdlp_status_not_installed)
+                ytdlpStatus.text = if (installed) {
+                    val channel = getString(
+                        if (Settings.ytDlpUseNightly()) R.string.settings_ytdlp_channel_nightly
+                        else R.string.settings_ytdlp_channel_stable
+                    )
+                    "${getString(R.string.settings_ytdlp_status_installed)}  •  $channel"
+                } else {
+                    getString(R.string.settings_ytdlp_status_not_installed)
+                }
                 ytdlpButton.setText(if (installed) R.string.settings_ytdlp_delete else R.string.settings_ytdlp_install)
                 ytdlpButton.isEnabled = true
+                ytdlpUpdateButton.visibility = if (installed) android.view.View.VISIBLE else android.view.View.GONE
+                ytdlpUpdateButton.isEnabled = true
+                ytdlpUpdateButton.setText(R.string.settings_ytdlp_update)
+                ytdlpNightlyButton.visibility = if (installed) android.view.View.VISIBLE else android.view.View.GONE
+                ytdlpNightlyButton.isEnabled = true
+                // Button always offers switching to the *other* channel --
+                // once on nightly, it becomes "back to stable" instead of
+                // staying labeled "Use Nightly Build" forever.
+                ytdlpNightlyButton.setText(
+                    if (Settings.ytDlpUseNightly()) R.string.settings_ytdlp_switch_stable
+                    else R.string.settings_ytdlp_use_nightly
+                )
                 ytdlpProgress.visibility = android.view.View.GONE
             }
             refreshYtDlpRow()
@@ -877,6 +899,44 @@ class MainActivity : AppCompatActivity(), HomeFragment.Callbacks, DownloadsFragm
                         ).show()
                         refreshYtDlpRow()
                     }
+                }
+            }
+
+            ytdlpUpdateButton.setOnClickListener {
+                ytdlpUpdateButton.isEnabled = false
+                ytdlpNightlyButton.isEnabled = false
+                ytdlpProgress.visibility = android.view.View.VISIBLE
+                ytdlpStatus.setText(R.string.settings_ytdlp_updating)
+                lifecycleScope.launch {
+                    val result = withContext(Dispatchers.IO) { YtDlpManager.update(this@MainActivity) }
+                    Toast.makeText(
+                        this@MainActivity,
+                        result?.let { "yt-dlp: $it" } ?: "Update failed — check your connection",
+                        Toast.LENGTH_LONG
+                    ).show()
+                    refreshYtDlpRow()
+                }
+            }
+
+            ytdlpNightlyButton.setOnClickListener {
+                val switchingToNightly = !Settings.ytDlpUseNightly()
+                ytdlpUpdateButton.isEnabled = false
+                ytdlpNightlyButton.isEnabled = false
+                ytdlpProgress.visibility = android.view.View.VISIBLE
+                ytdlpStatus.setText(
+                    if (switchingToNightly) R.string.settings_ytdlp_switching_nightly
+                    else R.string.settings_ytdlp_updating
+                )
+                lifecycleScope.launch {
+                    val result = withContext(Dispatchers.IO) {
+                        YtDlpManager.switchChannel(this@MainActivity, switchingToNightly)
+                    }
+                    Toast.makeText(
+                        this@MainActivity,
+                        result?.let { "yt-dlp: $it" } ?: "Switch failed — check your connection",
+                        Toast.LENGTH_LONG
+                    ).show()
+                    refreshYtDlpRow()
                 }
             }
         }

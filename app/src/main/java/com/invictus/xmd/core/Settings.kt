@@ -79,6 +79,7 @@ object Settings {
     // ── YouTube downloader (yt-dlp) install/update state (Full build only) ─
     private const val KEY_YTDLP_INSTALLED = "ytdlp_installed"
     private const val KEY_YTDLP_LAST_UPDATE_MS = "ytdlp_last_update_ms"
+    private const val KEY_YTDLP_NIGHTLY = "ytdlp_use_nightly"
 
     fun ytDlpInstalled(): Boolean = prefs.getBoolean(KEY_YTDLP_INSTALLED, false)
     fun setYtDlpInstalled(value: Boolean) {
@@ -89,5 +90,17 @@ object Settings {
     fun ytDlpLastUpdateMs(): Long = prefs.getLong(KEY_YTDLP_LAST_UPDATE_MS, 0L)
     fun setYtDlpLastUpdateMs(value: Long) {
         prefs.edit().putLong(KEY_YTDLP_LAST_UPDATE_MS, value).apply()
+    }
+
+    /**
+     * Which yt-dlp release channel Settings' "Use Nightly Build" toggled to
+     * (default false = stable). Persisted so ensureReady()'s daily
+     * background self-update check keeps updating on whichever channel the
+     * user last picked, instead of silently drifting back to stable/nightly
+     * on the next process start.
+     */
+    fun ytDlpUseNightly(): Boolean = prefs.getBoolean(KEY_YTDLP_NIGHTLY, false)
+    fun setYtDlpUseNightly(value: Boolean) {
+        prefs.edit().putBoolean(KEY_YTDLP_NIGHTLY, value).apply()
     }
 }

@@ -150,12 +150,71 @@ object YtDlpManager {
 
         val oneDayMs = 24L * 60 * 60 * 1000
         if (System.currentTimeMillis() - Settings.ytDlpLastUpdateMs() > oneDayMs) {
+            val channel = if (Settings.ytDlpUseNightly()) YoutubeDL.UpdateChannel._NIGHTLY else YoutubeDL.UpdateChannel._STABLE
             runCatching {
-                YoutubeDL.getInstance().updateYoutubeDL(context, YoutubeDL.UpdateChannel._NIGHTLY)
+                YoutubeDL.getInstance().updateYoutubeDL(context, channel)
             }.onFailure { Log.w(TAG, "yt-dlp self-update check failed (will retry later)", it) }
             Settings.setYtDlpLastUpdateMs(System.currentTimeMillis())
         }
         return true
+    }
+
+    /**
+     * Manual "Update" button in Settings -- explicit, immediate check on
+     * whichever channel [Settings.ytDlpUseNightly] currently points at,
+     * instead of waiting for [ensureReady]'s once-a-day background check.
+     * Only makes sure yt-dlp is initialized first (cheap re-init from
+     * already-unpacked files, not a real network call) rather than routing
+     * through [ensureReady] itself, since that has its own 24h throttle that
+     * would otherwise silently no-op a manual tap that happens to land
+     * inside the same day as the last background check.
+     *
+     * Returns a status string combining yt-dlp's own UpdateStatus (e.g.
+     * "ALREADY_UP_TO_DATE" / "DONE") with the resulting version name, so
+     * Settings can show something more useful than a bare success toast, or
+     * null on failure.
+     */
+    @Synchronized
+    fun update(context: Context): String? {
+        if (!isInstalled(context)) return null
+        if (!initialized) {
+            val installError = install(context)
+            if (installError != null) return null
+        }
+        val channel = if (Settings.ytDlpUseNightly()) YoutubeDL.UpdateChannel._NIGHTLY else YoutubeDL.UpdateChannel._STABLE
+        return try {
+            val status = YoutubeDL.getInstance().updateYoutubeDL(context, channel)
+            Settings.setYtDlpLastUpdateMs(System.currentTimeMillis())
+            val version = runCatching { YoutubeDL.getInstance().versionName(context) }.getOrNull()
+            if (version != null) "$status ($version)" else status.toString()
+        } catch (e: Throwable) {
+            Log.e(TAG, "Manual yt-dlp update failed", e)
+            null
+        }
+    }
+
+    /**
+     * Switches the release channel and immediately updates onto it (a bare
+     * channel-preference flip with no accompanying update would leave
+     * whatever version was already installed running until the next daily
+     * background check, up to 24h away). [toNightly] false switches back to
+     * stable and updates onto that instead -- same button/preference drives
+     * both directions, matching the toggle in the reference (mpv-rx) this
+     * was modeled on where flipping to stable is just "Update" with nightly
+     * off.
+     *
+     * Returns the same status string as [update], or null on failure -- on
+     * failure the channel preference is rolled back too, so a failed switch
+     * doesn't leave Settings claiming a channel that was never actually
+     * fetched.
+     */
+    @Synchronized
+    fun switchChannel(context: Context, toNightly: Boolean): String? {
+        val previousChannel = Settings.ytDlpUseNightly()
+        Settings.setYtDlpUseNightly(toNightly)
+        val result = update(context)
+        if (result == null) Settings.setYtDlpUseNightly(previousChannel)
+        return result
     }
 
     fun isReady(): Boolean = initialized

@@ -63,6 +63,13 @@
     <string name="settings_ytdlp_installing">Installing…</string>
     <string name="settings_ytdlp_status_installed">Installed ✓</string>
     <string name="settings_ytdlp_status_not_installed">Not installed</string>
+    <string name="settings_ytdlp_update">Update</string>
+    <string name="settings_ytdlp_updating">Updating…</string>
+    <string name="settings_ytdlp_use_nightly">Use Nightly Build</string>
+    <string name="settings_ytdlp_switch_stable">Switch to Stable Build</string>
+    <string name="settings_ytdlp_switching_nightly">Switching to nightly…</string>
+    <string name="settings_ytdlp_channel_stable">Channel: Stable</string>
+    <string name="settings_ytdlp_channel_nightly">Channel: Nightly</string>
     <string name="settings_save">Save</string>
 
     <!-- Browser -->

@@ -168,12 +168,36 @@
                 android:visibility="gone" />
 
             <Button
+                android:id="@+id/ytdlpUpdateButton"
+                style="?android:attr/buttonBarButtonStyle"
+                android:layout_width="wrap_content"
+                android:layout_height="wrap_content"
+                android:text="@string/settings_ytdlp_update"
+                android:visibility="gone" />
+
+            <Button
                 android:id="@+id/ytdlpActionButton"
                 style="?android:attr/buttonBarButtonStyle"
                 android:layout_width="wrap_content"
                 android:layout_height="wrap_content"
                 android:text="@string/settings_ytdlp_install" />
         </LinearLayout>
+
+        <!-- Nightly is yt-dlp's own fast-moving branch, ahead of the stable
+             release -- useful when YouTube breaks the stable channel (which
+             happens periodically) and a fix has already landed upstream but
+             hasn't been tagged stable yet. Full width + its own row since
+             it's a bigger, less-common decision than plain Update, same as
+             the reference layout this was modeled on. -->
+        <Button
+            android:id="@+id/ytdlpNightlyButton"
+            style="?android:attr/buttonBarButtonStyle"
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:layout_marginTop="4dp"
+            android:text="@string/settings_ytdlp_use_nightly"
+            android:textColor="@color/ff_muted"
+            android:visibility="gone" />
     </LinearLayout>
 
 </LinearLayout>

@@ -32,6 +32,10 @@ object YtDlpManager {
 
     fun ensureReady(context: Context): Boolean = false
 
+    fun update(context: Context): String? = null
+
+    fun switchChannel(context: Context, toNightly: Boolean): String? = null
+
     fun isReady(): Boolean = false
 
     data class DownloadProgress(
