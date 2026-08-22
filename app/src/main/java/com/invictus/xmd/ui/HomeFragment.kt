@@ -1,7 +1,10 @@
 package com.invictus.xmd.ui
 
 import android.content.ClipboardManager
+import android.content.Intent
+import android.net.Uri
 import android.os.Bundle
+import android.provider.OpenableColumns
 import android.text.Editable
 import android.text.TextWatcher
 import android.view.LayoutInflater
@@ -10,6 +13,8 @@ import android.view.ViewGroup
 import android.widget.EditText
 import android.widget.TextView
 import android.widget.Toast
+import androidx.activity.result.ActivityResultLauncher
+import androidx.activity.result.contract.ActivityResultContracts
 import androidx.fragment.app.Fragment
 import com.google.android.material.button.MaterialButton
 import com.invictus.xmd.R
@@ -24,6 +29,7 @@ class HomeFragment : Fragment() {
         fun triggerPrepare(lines: List<String>)
         fun triggerDownloadReady()
         fun triggerDownloadDirect(lines: List<String>)
+        fun triggerDownloadTorrentFile(uri: Uri, displayName: String?)
     }
 
     // ── State ─────────────────────────────────────────────────────────────
@@ -37,6 +43,15 @@ class HomeFragment : Fragment() {
     private val clipboardListener = ClipboardManager.OnPrimaryClipChangedListener {
         checkClipboard()
     }
+
+    // Lets the user pick a .torrent file already sitting on the device
+    // (Downloads folder, a file manager, etc.) instead of only pasting a
+    // magnet link or a remote .torrent URL. Must be registered here, before
+    // the fragment reaches CREATED.
+    private val pickTorrentFileLauncher: ActivityResultLauncher<Array<String>> =
+        registerForActivityResult(ActivityResultContracts.OpenDocument()) { uri ->
+            if (uri != null) onTorrentFilePicked(uri)
+        }
 
     // ── Lifecycle ─────────────────────────────────────────────────────────
 
@@ -53,6 +68,16 @@ class HomeFragment : Fragment() {
         view.findViewById<View>(R.id.downloadButton).setOnClickListener { onDownloadClicked() }
         view.findViewById<View>(R.id.clipboardAddButton).setOnClickListener { onClipboardAddClicked() }
         view.findViewById<View>(R.id.clipboardDismissButton).setOnClickListener { dismissClipboardBanner() }
+        view.findViewById<View>(R.id.pickTorrentFileButton).setOnClickListener {
+            // application/x-bittorrent is the correct mime type for .torrent
+            // files, but plenty of file managers/devices mis-tag them as
+            // generic octet-stream -- include both so real torrent files
+            // aren't hidden by the picker, without falling all the way back
+            // to "*/*" (which would show every file on the device).
+            pickTorrentFileLauncher.launch(
+                arrayOf("application/x-bittorrent", "application/octet-stream")
+            )
+        }
 
         linksInput.addTextChangedListener(object : TextWatcher {
             override fun beforeTextChanged(s: CharSequence?, start: Int, count: Int, after: Int) {}
@@ -187,6 +212,39 @@ class HomeFragment : Fragment() {
         }
         (activity as? Callbacks)?.triggerDownloadDirect(lines)
         linksInput.setText("")
+    }
+
+    /**
+     * The picked file is already a complete .torrent -- nothing to resolve --
+     * so this goes straight to downloading, same as a pasted magnet link or
+     * remote .torrent URL. SAF only hands back a content:// URI with no
+     * guaranteed filename in it, so the real display name is looked up here
+     * (via OpenableColumns) and passed along -- otherwise the Downloads list
+     * would show the raw content:// URI as the item's name until it finished.
+     */
+    private fun onTorrentFilePicked(uri: Uri) {
+        val displayName = queryDisplayName(uri)
+        if (displayName != null && !displayName.endsWith(".torrent", ignoreCase = true)) {
+            Toast.makeText(requireContext(), "Please select a .torrent file", Toast.LENGTH_SHORT).show()
+            return
+        }
+        runCatching {
+            requireContext().contentResolver.takePersistableUriPermission(
+                uri, Intent.FLAG_GRANT_READ_URI_PERMISSION
+            )
+        }
+        (activity as? Callbacks)?.triggerDownloadTorrentFile(uri, displayName)
+    }
+
+    private fun queryDisplayName(uri: Uri): String? {
+        return runCatching {
+            requireContext().contentResolver.query(
+                uri, arrayOf(OpenableColumns.DISPLAY_NAME), null, null, null
+            )?.use { cursor ->
+                val nameIndex = cursor.getColumnIndex(OpenableColumns.DISPLAY_NAME)
+                if (nameIndex >= 0 && cursor.moveToFirst()) cursor.getString(nameIndex) else null
+            }
+        }.getOrNull()
     }
 
     // ── Helpers ───────────────────────────────────────────────────────────

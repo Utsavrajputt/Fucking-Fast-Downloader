@@ -172,14 +172,28 @@ class QueueAdapter(
             holder.status.text = "⬇  ${if (item.bytesTotal > 0) "$pct%" else "Downloading…"}"
         }
 
-        if (item.bytesTotal > 0) {
-            holder.sizeText.text = "${formatBytes(item.bytesDone)} / ${formatBytes(item.bytesTotal)}"
-        } else if (item.bytesDone > 0) {
-            holder.sizeText.text = formatBytes(item.bytesDone)
+        // bytesTotal/bytesDone can go from 0 (unknown, hidden on the initial bind)
+        // to a real value on the very first progress tick -- so visibility must be
+        // (re)applied here too, not just the text, or the size line stays stuck GONE.
+        when {
+            item.bytesTotal > 0 -> {
+                holder.sizeText.text = "${formatBytes(item.bytesDone)} / ${formatBytes(item.bytesTotal)}"
+                holder.sizeText.visibility = View.VISIBLE
+            }
+            item.bytesDone > 0 -> {
+                holder.sizeText.text = formatBytes(item.bytesDone)
+                holder.sizeText.visibility = View.VISIBLE
+            }
+            else -> holder.sizeText.visibility = View.GONE
         }
 
-        if (item.status == ItemStatus.DOWNLOADING && item.bytesTotal > 0) {
-            holder.progress.progress = ((item.bytesDone * 100) / item.bytesTotal).toInt()
+        if (item.status == ItemStatus.DOWNLOADING) {
+            if (item.bytesTotal > 0) {
+                holder.progress.progress = ((item.bytesDone * 100) / item.bytesTotal).toInt()
+                holder.progress.visibility = View.VISIBLE
+            } else {
+                holder.progress.visibility = View.GONE
+            }
         }
 
         if (item.status == ItemStatus.DOWNLOADING && item.speedBps > 0) {

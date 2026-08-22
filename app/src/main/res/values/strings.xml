@@ -8,6 +8,7 @@
     <!-- Actions -->
     <string name="action_prepare">Prepare</string>
     <string name="action_download">Download Ready Files</string>
+    <string name="action_pick_torrent_file">Pick .torrent file</string>
     <string name="action_download_direct">Download</string>
     <string name="action_pause">Pause</string>
     <string name="action_resume">Resume</string>

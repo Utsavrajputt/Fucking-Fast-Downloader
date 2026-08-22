@@ -144,6 +144,22 @@
                         android:orientation="horizontal"
                         android:gravity="end">
 
+                        <ImageButton
+                            android:id="@+id/pickTorrentFileButton"
+                            android:layout_width="36dp"
+                            android:layout_height="36dp"
+                            android:layout_gravity="center_vertical"
+                            android:background="@drawable/bg_circle_outline"
+                            android:padding="8dp"
+                            android:src="@drawable/ic_add"
+                            android:tint="@color/ff_accent"
+                            android:contentDescription="@string/action_pick_torrent_file" />
+
+                        <View
+                            android:layout_width="0dp"
+                            android:layout_height="1dp"
+                            android:layout_weight="1" />
+
                         <com.google.android.material.button.MaterialButton
                             android:id="@+id/prepareButton"
                             style="@style/Widget.MaterialComponents.Button.OutlinedButton"

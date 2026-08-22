@@ -306,6 +306,49 @@ class MainActivity : AppCompatActivity(), HomeFragment.Callbacks, DownloadsFragm
         checkStoragePermission()
         checkNotificationPermission()
         autoResumePendingDownloads()
+        handleIncomingIntent(intent)
+    }
+
+    // ── Incoming links (external download-manager / share target) ──────────
+    // Fires when: (a) a browser's download picker launches xmd for a VIEW
+    // intent on a http(s) link (see the manifest intent-filter), or (b) a
+    // link is Shared into xmd from a browser that doesn't have a
+    // download-manager chooser (Chrome, Samsung Internet, Edge, ...).
+    // singleTop means an already-running MainActivity gets onNewIntent
+    // instead of a fresh onCreate, so both entry points are covered here.
+    override fun onNewIntent(intent: Intent) {
+        super.onNewIntent(intent)
+        setIntent(intent)
+        handleIncomingIntent(intent)
+    }
+
+    private fun handleIncomingIntent(intent: Intent) {
+        val url = when (intent.action) {
+            Intent.ACTION_VIEW -> intent.data?.toString()
+            Intent.ACTION_SEND -> intent.getStringExtra(Intent.EXTRA_TEXT)?.trim().orEmpty().let { text ->
+                if (text.startsWith("magnet:", ignoreCase = true)) text
+                else Regex("""https?://\S+""").find(text)?.value
+            }
+            else -> null
+        }?.trim()
+
+        val isHttp = url != null && (url.startsWith("http://") || url.startsWith("https://"))
+        val isMagnet = url != null && url.startsWith("magnet:", ignoreCase = true)
+        if (url.isNullOrEmpty() || !(isHttp || isMagnet)) return
+
+        // Consume it so rotation / re-entering onResume doesn't re-queue the
+        // same link a second time.
+        intent.action = null
+        intent.data = null
+
+        bottomNav.selectedItemId = R.id.nav_home
+
+        val needsPrepare = LinkParser.isShareLink(url) || LinkParser.isFitgirlPage(url)
+        if (needsPrepare) {
+            triggerPrepare(listOf(url))
+        } else {
+            triggerDownloadDirect(listOf(url))
+        }
     }
 
     /**
@@ -370,6 +413,19 @@ class MainActivity : AppCompatActivity(), HomeFragment.Callbacks, DownloadsFragm
             val item = QueueRepository.current().firstOrNull { it.sourceUrl == link }
             if (item != null) {
                 QueueRepository.update(item.id) { it.copy(directUrl = link, status = ItemStatus.READY) }
+            }
+        }
+        DownloadService.start(this)
+        showDownloadStartedSnackbar()
+    }
+
+    override fun triggerDownloadTorrentFile(uri: Uri, displayName: String?) {
+        val link = uri.toString()
+        QueueRepository.setLinks(listOf(link))
+        val item = QueueRepository.current().firstOrNull { it.sourceUrl == link }
+        if (item != null) {
+            QueueRepository.update(item.id) {
+                it.copy(directUrl = link, status = ItemStatus.READY, fileName = displayName ?: it.fileName)
             }
         }
         DownloadService.start(this)
