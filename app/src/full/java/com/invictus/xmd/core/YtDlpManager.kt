@@ -196,10 +196,33 @@ object YtDlpManager {
         if (option.isAudioOnly) {
             request.addOption("-x")
             request.addOption("--audio-format", "mp3")
+            // ID3 tags: title/uploader come from yt-dlp's own metadata for
+            // free via --embed-metadata, but it maps uploader -> "artist"
+            // only loosely and never sets album -- --parse-metadata fills
+            // both explicitly so the file shows real Artist/Album in a
+            // player instead of blank/mismatched tags. "%(artist,creator,
+            // uploader)s" falls back through whichever field YouTube's
+            // metadata actually has (music uploads set artist/creator;
+            // regular videos usually only have uploader).
+            request.addOption("--embed-metadata")
+            request.addOption("--embed-thumbnail")
+            // mp3 embedded art must be a JPEG (ID3v2 APIC), not yt-dlp's
+            // default webp thumbnail -- ffmpeg (bundled) does this convert.
+            request.addOption("--convert-thumbnails", "jpg")
+            request.addOption(
+                "--parse-metadata",
+                "%(artist,creator,uploader,channel)s:%(meta_artist)s"
+            )
+            request.addOption(
+                "--parse-metadata",
+                "%(album,playlist_title,channel)s:%(meta_album)s"
+            )
         } else {
             request.addOption("-f", option.formatSelector)
             // Merge container for the video+audio case above.
             request.addOption("--merge-output-format", "mp4")
+            request.addOption("--embed-thumbnail")
+            request.addOption("--embed-metadata")
         }
 
         // Correct signature: execute(request, processId, callback) with

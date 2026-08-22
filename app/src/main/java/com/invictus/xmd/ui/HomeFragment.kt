@@ -161,8 +161,12 @@ class HomeFragment : Fragment() {
 
     private fun updateButtonState() {
         val lines = currentInputLines()
+        // YouTube links deliberately excluded here: they don't need the
+        // FuckingFast/Fitgirl-style Prepare step (challenge/expand-sources) --
+        // the quality picker itself is their confirmation step, so they go
+        // through the Download button's direct-path below like a plain URL.
         val needsPrepare = lines.isEmpty() || lines.any {
-            LinkParser.isShareLink(it) || LinkParser.isFitgirlPage(it) || LinkParser.isYoutubeLink(it)
+            LinkParser.isShareLink(it) || LinkParser.isFitgirlPage(it)
         }
         view?.findViewById<View>(R.id.prepareButton)?.visibility =
             if (needsPrepare) View.VISIBLE else View.GONE

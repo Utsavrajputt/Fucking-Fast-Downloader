@@ -347,7 +347,7 @@ class MainActivity : AppCompatActivity(), HomeFragment.Callbacks, DownloadsFragm
 
         bottomNav.selectedItemId = R.id.nav_home
 
-        val needsPrepare = LinkParser.isShareLink(url) || LinkParser.isFitgirlPage(url) || LinkParser.isYoutubeLink(url)
+        val needsPrepare = LinkParser.isShareLink(url) || LinkParser.isFitgirlPage(url)
         if (needsPrepare) {
             triggerPrepare(listOf(url))
         } else {
@@ -413,14 +413,33 @@ class MainActivity : AppCompatActivity(), HomeFragment.Callbacks, DownloadsFragm
 
     override fun triggerDownloadDirect(lines: List<String>) {
         QueueRepository.setLinks(lines)
-        lines.forEach { link ->
+        val (youtubeLines, otherLines) = lines.partition { LinkParser.isYoutubeLink(it) }
+
+        otherLines.forEach { link ->
             val item = QueueRepository.current().firstOrNull { it.sourceUrl == link }
             if (item != null) {
                 QueueRepository.update(item.id) { it.copy(directUrl = link, status = ItemStatus.READY) }
             }
         }
-        DownloadService.start(this)
-        showDownloadStartedSnackbar()
+        if (otherLines.isNotEmpty()) {
+            DownloadService.start(this)
+            showDownloadStartedSnackbar()
+        }
+
+        // YouTube links skip directUrl/READY entirely -- they need the
+        // quality-picker dialog first (see resolveYoutube), same as if they'd
+        // gone through resolveAll(). DownloadService.start() for these fires
+        // from inside resolveYoutube() itself, once a quality is actually
+        // picked, not here.
+        if (youtubeLines.isNotEmpty()) {
+            lifecycleScope.launch {
+                for (link in youtubeLines) {
+                    val item = QueueRepository.current().firstOrNull { it.sourceUrl == link } ?: continue
+                    QueueRepository.update(item.id) { it.copy(status = ItemStatus.RESOLVING) }
+                    resolveOne(item)
+                }
+            }
+        }
     }
 
     override fun triggerDownloadTorrentFile(uri: Uri, displayName: String?) {
